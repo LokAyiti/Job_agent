@@ -1,0 +1,71 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.wheels/
+*.log
+.DS_Store
+.env
+.env.local
+.headroom/
+.kimi-code/
+.vscode/
+logs/
+secrets/
+resume/
+
+# User-provided local assets (resumes, cover letters, credentials)
+base resume/
+base cover letter/
+.env.example
+
+# Existing local project directories that should not be tracked
+# (until explicitly moved into the official project structure)
+/data/
+/job_agent/
+/tests/
+/run.py
+/requirements.txt
+
+# AI agent tooling / local installs (keep project clean)
+.gstack/
+.claude/
+.agents/
+.factory/
+.codex/
+.opencode/
+.kiro/
+.slate/
+.hermes/
+.gbrain/
+
+# Local copies of installed skill suites
+gstack/
+gstack-skills/
+skills.md
+
+# Job application system outputs (Track A generated artifacts)
+job_application_system/resume/
+job_application_system/cover_letter/
+job_application_system/data/*.json
+job_application_system/data/jobs_log.xlsx
+job_application_system/logs/
+job_application_system/headroom.db
+job_application_system/templates/Resume AI Engineer.docx
+job_application_system/.env
+job_application_system/__pycache__/
+job_application_system/**/*.pyc
+job_application_system/inspect*.html
+job_application_system/inspect*.png
+
+# Docker / infrastructure (centralize outside project)
+docker-compose*.yml
+qdrant_storage/
+
