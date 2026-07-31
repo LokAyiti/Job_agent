@@ -24,15 +24,15 @@ resume/
 # User-provided local assets (resumes, cover letters, credentials)
 base resume/
 base cover letter/
-.env.example
 
-# Existing local project directories that should not be tracked
-# (until explicitly moved into the official project structure)
+# Track A/B source code is now part of the official project structure
+# /job_agent/
+# /tests/
+# /run.py
+# /requirements.txt
+
+# Root data directory is ignored; only the static sample is tracked
 /data/
-/job_agent/
-/tests/
-/run.py
-/requirements.txt
 
 # AI agent tooling / local installs (keep project clean)
 .gstack/
