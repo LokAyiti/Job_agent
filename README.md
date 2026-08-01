@@ -1,17 +1,19 @@
-# Automated Job Application System — Track B
+# Automated Job Application System
 
-Track B implements the **Action & Persistence Layer** of the multi-agent job application system.
+End-to-end multi-agent pipeline that discovers jobs, scores fit, tailors resumes, submits applications, and monitors recruiter replies.
 
-It includes:
-- **Application Submission Agent** (Playwright + site adapters)
-- **Email/Recruiter Communication Agent** (Gmail API)
-- **Orchestrator / CEO Agent** (sequencing, retries, logging)
-- **Excel logger** and **SQLite job queue** for state
-- **Google Drive/Sheets sync** (optional)
-- **2Captcha CAPTCHA solving** with human-in-the-loop fallback
-- **Credential store** for platform accounts (Workday, iCIMS, etc.)
+## Tracks
 
-Track B consumes tailored resumes produced by Track A from the `resume/` folder.
+- **User Intake** — interactive CLI wizard that produces a unified `profile.json`.
+- **Track C — Job Discovery Agent** — scrapes Greenhouse, Lever, GovernmentJobs, and configured company career pages; LinkedIn/Indeed scaffolding is included but disabled by default.
+- **Track D — Fit Scoring Agent** — combines LLM semantic scoring with keyword overlap to filter out poor matches before any resume work is done.
+- **Track E — Resume Tailoring Engine** — four sub-agents:
+  1. JD Analyzer Agent
+  2. Resume Retriever Agent
+  3. Rewrite / Fabrication Agent (honors `fabrication_tolerance` and preserves dates)
+  4. ATS / Recruiter Scoring Agent (with feedback loop)
+- **Track B — Action & Persistence Layer** — submission automation, email monitoring, encrypted credential store, proxy rotation, stealth browsing, circuit breakers, structured logging, and Excel/SQLite state.
+- **Orchestrator / CEO Agent** — coordinates the full pipeline and gates real submissions behind trusted-platform approval.
 
 ## Project layout
 
@@ -22,6 +24,17 @@ job_agent/
     submission_agent.py   # Fills/submits applications, solves CAPTCHA, manages login
     email_agent.py        # Gmail/Outlook monitor, drafts, responses
     orchestrator.py       # CEO agent
+    scoring_agent.py      # LLM + keyword fit scoring
+    tailoring_agent.py    # Subprocess bridge to Track E resume engine
+  discovery/
+    base.py               # JobDiscoverySource protocol
+    registry.py           # Central discovery registry
+    greenhouse.py         # Greenhouse API discovery
+    lever.py              # Lever API discovery
+    governmentjobs.py     # GovernmentJobs.com scraper
+    company_pages.py      # Generic career-page crawler
+    linkedin.py           # LinkedIn scaffolding (disabled by default)
+    indeed.py             # Indeed scaffolding (disabled by default)
   persistence/
     credentials.py        # Encrypted SQLite account store
     excel_logger.py       # applications.xlsx log
@@ -43,6 +56,17 @@ job_agent/
   config.py               # pydantic-settings + .env
   models.py               # JobApplication, Resume, Account, statuses
   cli.py                  # Command-line entry
+
+job_application_system/
+  agents/
+    jd_analyzer.py        # Track E JD Analyzer Agent
+    resume_retriever.py   # Track E Resume Retriever Agent
+    resume_tailor.py      # Track E Rewrite / Fabrication Agent
+    resume_builder.py     # DOCX/PDF resume builder
+    ats_recruiter_scorer.py  # Track E ATS / Recruiter Scoring Agent
+    cover_letter_builder.py  # Cover-letter generator
+    consistency_ledger.py    # Maps every generated resume to source + claims
+  tailor_bridge.py        # Subprocess bridge called by Track B
 ```
 
 ## Quick start
@@ -71,26 +95,44 @@ Optional:
 - Google service-account JSON path + sheet/drive IDs
 - Gmail credentials JSON + sender email
 
-3. Place one or more tailored resumes in `resume/` using the naming convention:
-
-```
-resume/JD_Role_MyName_TodaysDate.pdf
-```
-
-4. Create a job list and run in dry-run mode (default):
+3. Run the intake wizard to create a unified `profile.json`:
 
 ```bash
-python -m job_agent.cli create-sample-jobs
-python -m job_agent.cli run --jobs data/sample_jobs.json --dry-run
+python -m job_agent.cli intake
 ```
 
-5. Check the Excel log:
+This writes `profile.json` with your target roles, locations, salary floor, base resume library, and fabrication tolerance (`none | moderate | aggressive`).
+
+4. (Optional) Add base resume templates to `base resume/`.
+
+5. Discover jobs and run the full pipeline in dry-run mode:
+
+```bash
+python -m job_agent.cli discover --sources greenhouse,lever
+python -m job_agent.cli pipeline --sources greenhouse --dry-run
+```
+
+6. Check the Excel log:
 
 ```bash
 python -m job_agent.cli show-config
 ```
 
 The log is at `logs/applications.xlsx`.
+
+## How the pipeline works
+
+1. **User Intake** writes a single `profile.json` with your targets and fabrication tolerance.
+2. **Track C — Job Discovery** fetches postings from Greenhouse, Lever, GovernmentJobs, and any configured company career pages. LinkedIn/Indeed sources exist but are disabled by default.
+3. **Track D — Fit Scoring** combines an LLM semantic score with keyword overlap and drops jobs below `MIN_FIT_SCORE`.
+4. **Track E — Resume Tailoring Engine** runs four sub-agents:
+   - JD Analyzer extracts structured requirements.
+   - Resume Retriever picks the best base template from `base resume/`.
+   - Rewrite / Fabrication Agent tailors content to the JD while preserving original employment dates.
+   - ATS / Recruiter Scoring Agent validates the draft and loops back with feedback if needed.
+   - A **consistency ledger** at `data/consistency_ledger.json` records every generated resume, its source template, tolerance level, and claims.
+5. **Track B — Submission & Persistence** fills/submits forms, monitors email, and logs everything to Excel/SQLite.
+6. **Orchestrator / CEO Agent** sequences the agents, applies human-approval gates, and promotes platforms to auto-submit only after enough approved successes.
 
 ## Safety switches & anti-detection
 
@@ -115,7 +157,7 @@ For platforms that require a candidate account, the Orchestrator checks the loca
 2. If 2Captcha fails repeatedly, the circuit breaker opens to avoid burning API credits, and the agent falls back to human-in-the-loop.
 3. If 2Captcha is not configured or an unsupported challenge type appears, the agent pauses for manual entry (`HUMAN_IN_THE_LOOP=true`) or flags the job as `needs_human`.
 
-## Track C — Reliability / anti-detection
+## Track B — Reliability / anti-detection (Action & Persistence Layer)
 
 ### Credential encryption
 
@@ -166,8 +208,10 @@ Each browser context rotates through the list. Leave blank to run without a prox
 
 ```bash
 python -m job_agent.cli --help
+python -m job_agent.cli intake                           # interactive profile wizard
 python -m job_agent.cli show-config
-python -m job_agent.cli create-sample-jobs
+python -m job_agent.cli discover --sources greenhouse,lever
+python -m job_agent.cli pipeline --sources greenhouse    # discover -> score -> tailor -> submit (dry-run)
 python -m job_agent.cli run --jobs data/jobs.json --dry-run
 python -m job_agent.cli run --jobs data/jobs.json        # respects ENABLE_AUTO_SUBMIT
 python -m job_agent.cli email                            # check all enabled inboxes for recruiter updates
@@ -292,13 +336,12 @@ pytest tests/ -v
 ## TODO / next steps
 
 - Refine selectors per real company page for Greenhouse, Workday, and iCIMS.
-- Add a human-approval gate before real submissions.
-- Add more site adapters (Lever, LinkedIn Easy Apply, custom company portals).
-- Integrate Track A resume generation so resumes are produced automatically.
-- Add a Chrome extension adapter for JS-heavy portals.
+- Implement LinkedIn/Indeed discovery via Chrome extension or paid API.
 - Add CAPTCHA handling for image/grid challenges not covered by 2Captcha.
-- Evaluate stronger stealth libraries (playwright-stealth / patchright) once the basic anti-detection scripts are profiled.
+- Add feedback loop from email outcomes to resume tailoring weights.
+- Evaluate stronger stealth libraries (playwright-stealth / patchright).
 - Migrate credential master key to OS keyring or cloud secret manager for production.
+- Add a lightweight cron / Windows Task Scheduler command for daily runs.
 
 ## Security note
 

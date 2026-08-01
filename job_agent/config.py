@@ -93,6 +93,20 @@ class Settings(BaseSettings):
 
     # LLM-based fit scoring
     min_fit_score: int = Field(default=60)
+    llm_fit_score_weight: float = Field(default=0.7)
+
+    @field_validator("llm_fit_score_weight", mode="before")
+    @classmethod
+    def _validate_weight_range(cls, value):
+        if value is None:
+            return 0.7
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"llm_fit_score_weight must be a float between 0 and 1, got {value}")
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"llm_fit_score_weight must be between 0 and 1, got {value}")
+        return value
 
     # Rate limiting / retries
     max_retries: int = Field(default=3)

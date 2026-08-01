@@ -378,7 +378,10 @@ def show_config():
     click.echo(f"log_to_file: {settings.log_to_file}")
     click.echo(f"agent_log_file: {settings.agent_log_file}")
     click.echo(f"json_logs: {settings.json_logs}")
+    click.echo(f"base_resume_dir: {settings.base_resume_dir}")
+    click.echo(f"fabrication_tolerance: {settings.fabrication_tolerance}")
     click.echo(f"min_fit_score: {settings.min_fit_score}")
+    click.echo(f"llm_fit_score_weight: {settings.llm_fit_score_weight}")
     click.echo(f"trusted_platforms: {settings.trusted_platform_list}")
 
 

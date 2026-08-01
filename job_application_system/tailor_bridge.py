@@ -1,8 +1,16 @@
-"""Subprocess bridge that lets Track B invoke Track A resume generation.
+"""Subprocess bridge that lets Track B invoke the Track A resume tailoring engine.
 
 Track A uses a separate package layout and its own .env. Rather than refactor
 all of Track A's relative imports, this script is run from the
 job_application_system directory and communicates via JSON on stdin/stdout.
+
+This bridge now orchestrates the four resume-tailoring sub-agents:
+  1. JD Analyzer Agent
+  2. Resume Retriever Agent
+  3. Rewrite / Fabrication Agent
+  4. ATS / Recruiter Scoring Agent
+
+and records every generated resume in the Consistency Ledger.
 """
 import argparse
 import json
@@ -14,14 +22,20 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "job_application_system"))
 
+from agents.ats_recruiter_scorer import ATSRecruiterScorer
+from agents.consistency_ledger import ConsistencyLedger
+from agents.cover_letter_builder import CoverLetterBuilder
 from agents.jd_analyzer import JDAnalyzer
 from agents.resume_builder import ResumeBuilder
+from agents.resume_retriever import ResumeRetriever
 from agents.resume_tailor import ResumeTailor
-from agents.cover_letter_builder import CoverLetterBuilder
 from models.job_models import JobListing, TailoredResume
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Maximum rewrite attempts when the ATS/recruiter scorer rejects a draft.
+MAX_REWRITE_ATTEMPTS = 3
 
 
 def _coerce_job_listing(raw: dict) -> JobListing:
@@ -37,30 +51,82 @@ def _coerce_job_listing(raw: dict) -> JobListing:
     )
 
 
+def _resolve_path(value: str | Path | None, default: str) -> Path:
+    path = Path(value) if value else PROJECT_ROOT / default
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return path
+
+
 def _build_tailored_resume(job: JobListing, profile: dict) -> TailoredResume:
     """Generate a DOCX/PDF resume and cover letter for a single job."""
     assets = profile.get("assets", {})
-    template = Path(assets.get("base_resume_template", "base resume/Resume AI Engineer.docx"))
-    if not template.is_absolute():
-        template = PROJECT_ROOT / template
+    preferences = profile.get("preferences", {})
 
-    output_resume_dir = Path(assets.get("output_resume_dir", "resume"))
-    if not output_resume_dir.is_absolute():
-        output_resume_dir = PROJECT_ROOT / output_resume_dir
+    base_resume_dir = _resolve_path(assets.get("base_resume_dir"), "base resume")
+    fallback_template = _resolve_path(assets.get("base_resume_template"), "base resume/Resume AI Engineer.docx")
+    output_resume_dir = _resolve_path(assets.get("output_resume_dir"), "resume")
     output_resume_dir.mkdir(parents=True, exist_ok=True)
 
-    output_cover_dir = Path(assets.get("base_cover_letter_dir", "base cover letter"))
-    if not output_cover_dir.is_absolute():
-        output_cover_dir = PROJECT_ROOT / output_cover_dir
+    output_cover_dir = _resolve_path(assets.get("base_cover_letter_dir"), "base cover letter")
     output_cover_dir.mkdir(parents=True, exist_ok=True)
 
+    fabrication_tolerance = preferences.get("fabrication_tolerance", "moderate")
+
+    # 1. JD Analyzer Agent
     analyzer = JDAnalyzer()
     job_analysis = analyzer.analyze(job)
 
-    tailor = ResumeTailor(template)
-    tailored_content = tailor.tailor(job)
+    # 2. Resume Retriever Agent
+    retriever = ResumeRetriever(base_resume_dir, fallback_template=fallback_template)
+    selected_template = retriever.retrieve(job, profile)
 
-    resume_builder = ResumeBuilder(template, output_resume_dir)
+    # 3. Rewrite / Fabrication Agent with scorer feedback loop.
+    tailor = ResumeTailor(selected_template)
+    scorer = ATSRecruiterScorer()
+    tailored_content = None
+    revision = 1
+    scorer_feedback = ""
+
+    for attempt in range(1, MAX_REWRITE_ATTEMPTS + 1):
+        logger.info(f"Resume rewrite attempt {attempt}/{MAX_REWRITE_ATTEMPTS} for {job.job_id}")
+        tailored_content = tailor.tailor(
+            job,
+            fabrication_tolerance=fabrication_tolerance,
+        )
+
+        score = scorer.score(tailored_content, job)
+        logger.info(
+            f"ATS={score['ats_score']}, recruiter={score['recruiter_score']}, "
+            f"passed={score['passed']}, feedback={score['feedback']}"
+        )
+        if score["passed"]:
+            revision = attempt
+            break
+
+        scorer_feedback = score["feedback"]
+        if attempt < MAX_REWRITE_ATTEMPTS:
+            logger.info(f"Applying scorer feedback: {scorer_feedback}")
+            # Inject feedback into the tailor for the next loop by appending to the
+            # base resume text context. This is a simple feedback mechanism; the LLM
+            # will see the feedback in the next rewrite.
+            tailor.base_resume_text = (
+                tailor.base_resume_text
+                + f"\n\n[Previous draft scored ATS={score['ats_score']}, recruiter={score['recruiter_score']}. "
+                f"Feedback from ATS/recruiter scorer: {scorer_feedback}]"
+            )
+        else:
+            logger.warning(
+                f"ATS/recruiter scorer did not pass after {MAX_REWRITE_ATTEMPTS} attempts; "
+                f"using the last draft anyway."
+            )
+            revision = attempt
+
+    if tailored_content is None:
+        raise RuntimeError("Resume tailoring produced no content")
+
+    # 4. Resume Builder exports DOCX/PDF.
+    resume_builder = ResumeBuilder(selected_template, output_resume_dir)
     docx_path, pdf_path = resume_builder.build(
         tailored_content,
         job.title,
@@ -68,10 +134,26 @@ def _build_tailored_resume(job: JobListing, profile: dict) -> TailoredResume:
         job_id=job.job_id,
     )
 
+    # 5. Cover Letter Builder.
     highlights = "\n".join(profile.get("experience_highlights", []))
     angle = job_analysis.get("cover_letter_angle", "")
     cover_builder = CoverLetterBuilder(output_cover_dir)
     cover_pdf_path = cover_builder.build(job, highlights, angle)
+
+    # 6. Consistency Ledger.
+    ledger = ConsistencyLedger()
+    ledger.record(
+        job=job,
+        source_template=selected_template,
+        fabrication_tolerance=fabrication_tolerance,
+        tailored_content=tailored_content,
+        output_paths={
+            "resume_docx": docx_path,
+            "resume_pdf": pdf_path,
+            "cover_letter_pdf": cover_pdf_path,
+        },
+        revision=revision,
+    )
 
     return TailoredResume(
         job=job,

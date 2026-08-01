@@ -27,6 +27,10 @@
       "gradial",
       "openai",
       "anthropic"
+    ],
+    "lever_sites": [
+      "fivetran",
+      "notion"
     ]
   },
   "assets": {

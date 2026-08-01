@@ -1,4 +1,4 @@
-"""LLM-based fit-scoring agent for job applications."""
+"""Fit-scoring agent combining LLM semantic matching and keyword overlap."""
 import json
 import re
 from pathlib import Path
@@ -31,8 +31,100 @@ Instructions:
 """
 
 
+# Common English stopwords to ignore in keyword overlap.
+_STOPWORDS = {
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "to", "of", "and", "or", "for", "with", "in", "on", "at", "by", "from",
+    "as", "this", "that", "these", "those", "it", "its", "they", "them", "their",
+    "we", "our", "us", "you", "your", "i", "me", "my", "he", "she", "his", "her",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could", "should",
+    "may", "might", "must", "can", "shall", "about", "above", "across", "after",
+    "against", "along", "among", "around", "before", "behind", "below", "beneath",
+    "beside", "between", "beyond", "during", "inside", "into", "near", "off", "onto",
+    "outside", "over", "under", "until", "upon", "within", "without", "through",
+    "throughout", "toward", "towards", "up", "down", "out", "over", "under", "again",
+    "further", "then", "once", "here", "there", "when", "where", "why", "how", "all",
+    "any", "both", "each", "few", "more", "most", "other", "some", "such", "no", "nor",
+    "not", "only", "own", "same", "so", "than", "too", "very", "just", "now", "also",
+    "new", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+}
+
+
+class KeywordScorer:
+    """Compute keyword overlap between a job and a candidate profile."""
+
+    def __init__(self, profile: dict[str, Any]):
+        self.profile = profile
+        self.profile_keywords = self._extract_profile_keywords(profile)
+
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        """Lower-case, de-punctuate, and drop stopwords / short tokens."""
+        text = re.sub(r"[^a-zA-Z0-9+#/\-]", " ", text.lower())
+        tokens = {
+            token.strip("-+")
+            for token in text.split()
+            if len(token) >= 2 and token not in _STOPWORDS
+        }
+        return tokens
+
+    def _extract_profile_keywords(self, profile: dict[str, Any]) -> set[str]:
+        parts: list[str] = []
+        skills = profile.get("skills", [])
+        parts.extend(skills)
+
+        highlights = profile.get("experience_highlights", [])
+        parts.extend(highlights)
+
+        preferences = profile.get("preferences", {})
+        target_roles = preferences.get("target_roles", [])
+        parts.extend(target_roles)
+
+        education = profile.get("education", [])
+        for edu in education:
+            if isinstance(edu, dict):
+                parts.append(edu.get("degree", ""))
+                parts.append(edu.get("institution", ""))
+
+        personal = profile.get("personal_info", {})
+        parts.append(personal.get("name", ""))
+
+        text = " ".join(str(p) for p in parts if p)
+        return self._tokenize(text)
+
+    def score(self, job) -> tuple[int, str]:
+        """Return keyword coverage score (0-100) and a one-line reason."""
+        job_text = " ".join(
+            str(field)
+            for field in [
+                job.title,
+                getattr(job, "description", "") or "",
+                getattr(job, "requirements", "") or "",
+            ]
+        )
+        job_keywords = self._tokenize(job_text)
+        if not job_keywords:
+            return 0, "No job keywords to match against"
+
+        matches = self.profile_keywords & job_keywords
+        coverage = len(matches) / len(job_keywords)
+        score = int(round(coverage * 100))
+
+        # Title/role match bonus: if the job title contains a target role, boost.
+        preferences = self.profile.get("preferences", {})
+        target_roles = [role.lower() for role in preferences.get("target_roles", [])]
+        title_lower = str(job.title).lower()
+        role_bonus = 0
+        if any(role in title_lower for role in target_roles):
+            role_bonus = 10
+
+        score = min(100, score + role_bonus)
+        reason = f"Keyword overlap: {len(matches)}/{len(job_keywords)} ({score}%)"
+        return score, reason
+
+
 class ScoringAgent:
-    """Score a job against a candidate profile using an LLM."""
+    """Score a job against a candidate profile using LLM + keyword overlap."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -41,18 +133,42 @@ class ScoringAgent:
     def score(self, job) -> tuple[int, str]:
         """Return (score, reason) for a job against the loaded profile."""
         profile = self.settings.load_profile()
-        profile_text = self._format_profile(profile)
-        prompt = FIT_SCORE_PROMPT.format(
-            profile_text=profile_text,
-            title=job.title,
-            company=job.company,
-            location=job.location or "",
-            description=getattr(job, "description", "") or "",
-            requirements=getattr(job, "requirements", "") or "",
-        )
+        keyword_scorer = KeywordScorer(profile)
+        keyword_score, keyword_reason = keyword_scorer.score(job)
 
-        raw = self._llm_chat(prompt)
-        return self._parse_score(raw)
+        # Try LLM scoring; if it fails or no key is configured, fall back to keyword.
+        llm_score: int | None = None
+        llm_reason: str | None = None
+        try:
+            profile_text = self._format_profile(profile)
+            prompt = FIT_SCORE_PROMPT.format(
+                profile_text=profile_text,
+                title=job.title,
+                company=job.company,
+                location=job.location or "",
+                description=getattr(job, "description", "") or "",
+                requirements=getattr(job, "requirements", "") or "",
+            )
+            raw = self._llm_chat(prompt)
+            llm_score, llm_reason = self._parse_score(raw)
+        except Exception as exc:
+            logger.warning(f"LLM scoring failed for {job.title}: {exc}")
+
+        if llm_score is None:
+            return keyword_score, f"Keyword-only score: {keyword_reason}"
+
+        # Combine scores: 70% LLM + 30% keyword by default.
+        llm_weight = self.settings.llm_fit_score_weight
+        keyword_weight = 1.0 - llm_weight
+        combined = int(round(llm_score * llm_weight + keyword_score * keyword_weight))
+        combined = max(0, min(100, combined))
+
+        reason = (
+            f"LLM {llm_score} (weight {llm_weight:.0%}) + "
+            f"keyword {keyword_score} (weight {keyword_weight:.0%}) = {combined}. "
+            f"LLM: {llm_reason} | {keyword_reason}"
+        )
+        return combined, reason
 
     def _format_profile(self, profile: dict) -> str:
         lines = []

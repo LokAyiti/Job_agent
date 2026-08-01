@@ -1,4 +1,5 @@
 """Tests for Track D end-to-end automation loop."""
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -7,7 +8,9 @@ import pytest
 from job_agent.agents.scoring_agent import ScoringAgent
 from job_agent.agents.tailoring_agent import TailoringAgent
 from job_agent.config import Settings
+from job_agent.discovery.company_pages import CompanyPagesDiscovery
 from job_agent.discovery.greenhouse import GreenhouseDiscovery
+from job_agent.discovery.lever import LeverDiscovery
 from job_agent.discovery.registry import DiscoveryRegistry
 from job_agent.models import ApplicationStatus, JobApplication
 
@@ -82,7 +85,7 @@ def test_tailoring_agent_returns_none_on_failure(tmp_path):
 
 
 def test_scoring_agent_parses_llm_output():
-    settings = Settings(_env_file=None, min_fit_score=60)
+    settings = Settings(_env_file=None, min_fit_score=60, llm_fit_score_weight=1.0)
     agent = ScoringAgent(settings)
     job = JobApplication(title="Data Analyst", company="Test", url="https://example.com")
 
@@ -94,7 +97,7 @@ def test_scoring_agent_parses_llm_output():
 
 
 def test_scoring_agent_parses_markdown_fenced_output():
-    settings = Settings(_env_file=None)
+    settings = Settings(_env_file=None, llm_fit_score_weight=1.0)
     agent = ScoringAgent(settings)
     job = JobApplication(title="Data Analyst", company="Test", url="https://example.com")
 
@@ -106,7 +109,7 @@ def test_scoring_agent_parses_markdown_fenced_output():
 
 
 def test_scoring_agent_defaults_to_zero_on_bad_output():
-    settings = Settings(_env_file=None)
+    settings = Settings(_env_file=None, llm_fit_score_weight=1.0)
     agent = ScoringAgent(settings)
     job = JobApplication(title="Data Analyst", company="Test", url="https://example.com")
 
@@ -115,6 +118,44 @@ def test_scoring_agent_defaults_to_zero_on_bad_output():
         score, reason = agent.score(job)
         assert score == 0
         assert "parse" in reason.lower()
+
+
+def test_keyword_scorer_computes_coverage():
+    profile = {
+        "skills": ["SQL", "Python"],
+        "experience_highlights": ["Built dashboards in Tableau"],
+        "preferences": {"target_roles": ["Data Analyst"]},
+    }
+    from job_agent.agents.scoring_agent import KeywordScorer
+
+    scorer = KeywordScorer(profile)
+    job = JobApplication(
+        title="Data Analyst",
+        company="Test",
+        url="https://example.com",
+        description="Looking for SQL and Python skills. Tableau experience preferred.",
+    )
+    score, reason = scorer.score(job)
+    assert score > 0
+    assert "SQL" in reason or "Python" in reason or "overlap" in reason
+
+
+def test_scoring_agent_combines_llm_and_keyword():
+    settings = Settings(_env_file=None, llm_fit_score_weight=0.7)
+    agent = ScoringAgent(settings)
+    job = JobApplication(
+        title="Data Analyst",
+        company="Test",
+        url="https://example.com",
+        description="Must know SQL, Python, and Excel.",
+    )
+
+    with patch.object(agent, "_llm_chat") as mock_chat:
+        mock_chat.return_value = '{"score": 80, "reason": "Strong match"}'
+        score, reason = agent.score(job)
+        assert 0 <= score <= 100
+        assert "LLM" in reason and "keyword" in reason
+
 
 
 import pytest
@@ -167,9 +208,154 @@ def test_discovery_registry_lists_sources():
     registry = DiscoveryRegistry()
     assert "governmentjobs" in registry.list_sources()
     assert "greenhouse" in registry.list_sources()
+    assert "lever" in registry.list_sources()
+    assert "company_pages" in registry.list_sources()
+    assert "linkedin" in registry.list_sources()
+    assert "indeed" in registry.list_sources()
+
+
+def test_cli_intake_creates_profile(tmp_path):
+    from click.testing import CliRunner
+    from job_agent.cli import cli
+
+    runner = CliRunner()
+    output = tmp_path / "profile.json"
+    result = runner.invoke(
+        cli,
+        ["intake", "--output", str(output)],
+        input="\n".join(
+            [
+                "Test User",  # name
+                "test@example.com",  # email
+                "+1-555-123-4567",  # phone
+                "https://linkedin.com/in/test",  # linkedin
+                "United States",  # location
+                "US Citizen",  # work auth
+                "Data Analyst, Data Scientist",  # target roles
+                "United States, Remote",  # target locations
+                "100000",  # salary floor
+                "any",  # remote preference
+                "n",  # relocate
+                "moderate",  # fabrication tolerance
+                str(tmp_path / "base resume"),  # base resume dir
+                "base resume/Resume.docx",  # base template
+                "base resume/Resume.pdf",  # base pdf
+                "base cover letter",  # cover letter dir
+                "gradial, openai",  # greenhouse boards
+                "SQL, Python",  # skills
+                "Built dashboards; Designed pipelines",  # highlights
+                "MS, Example University, 2021",  # education
+            ]
+        ),
+    )
+    assert result.exit_code == 0, result.output
+    assert output.exists()
+    data = json.loads(output.read_text())
+    assert data["personal_info"]["name"] == "Test User"
+    assert data["preferences"]["fabrication_tolerance"] == "moderate"
+    assert data["assets"]["base_resume_dir"] == str(tmp_path / "base resume")
 
 
 def test_discovery_registry_unknown_source_raises():
     registry = DiscoveryRegistry()
     with pytest.raises(ValueError, match="Unknown discovery source"):
         registry.get("unknown", {})
+
+
+def test_lever_discovery_filters_by_role():
+    discovery = LeverDiscovery(site_slugs=["exampleco"])
+    api_response = [
+        {
+            "text": "Senior Data Analyst",
+            "hostedUrl": "https://jobs.lever.co/exampleco/abc123",
+            "categories": {"location": "Remote", "commitment": "Full-time"},
+            "description": "<p>We need a data analyst.</p>",
+            "lists": [{"text": "Requirements", "content": "<ul><li>SQL</li><li>Python</li></ul>"}],
+        },
+        {
+            "text": "Sales Development Representative",
+            "hostedUrl": "https://jobs.lever.co/exampleco/def456",
+            "categories": {"location": "Remote"},
+            "description": "Sell our product.",
+        },
+    ]
+
+    with patch("requests.get") as mock_get:
+        mock_get.return_value = MagicMock()
+        mock_get.return_value.raise_for_status = MagicMock()
+        mock_get.return_value.json.return_value = api_response
+
+        import asyncio
+
+        jobs = asyncio.run(
+            discovery.discover(
+                {
+                    "preferences": {
+                        "target_roles": ["Data Analyst", "Data Scientist"],
+                        "lever_sites": ["exampleco"],
+                    }
+                }
+            )
+        )
+
+    assert len(jobs) == 1
+    assert jobs[0].title == "Senior Data Analyst"
+    assert jobs[0].platform == "lever"
+    assert "SQL" in (jobs[0].description or "")
+
+
+def test_company_pages_discovery_extracts_job_links():
+    html = """
+    <html>
+      <body>
+        <a href="/jobs/123">Senior Data Analyst</a>
+        <a href="/careers/456">Software Engineer</a>
+        <a href="/privacy">Privacy Policy</a>
+        <a href="https://boards.greenhouse.io/example/jobs/789">Product Manager</a>
+      </body>
+    </html>
+    """
+    discovery = CompanyPagesDiscovery(pages=["https://example.com/careers"])
+
+    with patch("requests.get") as mock_get:
+        mock_get.return_value = MagicMock()
+        mock_get.return_value.raise_for_status = MagicMock()
+        mock_get.return_value.text = html
+
+        import asyncio
+
+        jobs = asyncio.run(
+            discovery.discover(
+                {
+                    "preferences": {
+                        "target_roles": ["Data Analyst"],
+                        "company_career_pages": ["https://example.com/careers"],
+                    }
+                }
+            )
+        )
+
+    assert len(jobs) == 1
+    assert jobs[0].title == "Senior Data Analyst"
+    assert jobs[0].platform is None
+
+
+def test_linkedin_discovery_disabled_by_default():
+    from job_agent.discovery.linkedin import LinkedInDiscovery
+
+    discovery = LinkedInDiscovery()
+    import asyncio
+
+    jobs = asyncio.run(discovery.discover({"preferences": {}}))
+    assert jobs == []
+
+
+def test_indeed_discovery_disabled_by_default():
+    from job_agent.discovery.indeed import IndeedDiscovery
+
+    discovery = IndeedDiscovery()
+    import asyncio
+
+    jobs = asyncio.run(discovery.discover({"preferences": {}}))
+    assert jobs == []
+
