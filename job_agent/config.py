@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     login_password: str = Field(default="")
 
     # CAPTCHA solving
-    twocaptcha_api_key: Optional[str] = Field(default=None)
+    twocaptcha_api_key: Optional[str] = Field(default=None, validation_alias="TWOCAPTCHA_API_KEY")
     captcha_timeout_seconds: int = Field(default=120)
 
     # Google (optional)
@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     # Gmail (optional)
     gmail_sender_email: Optional[str] = Field(default=None)
     gmail_credentials_json: Optional[Path] = Field(default=None)
+
+    # Outlook / Microsoft 365 (optional)
+    outlook_client_id: Optional[str] = Field(default=None)
+    outlook_use_device_code: bool = Field(default=True)
+    outlook_authority: Optional[str] = Field(default="https://login.microsoftonline.com/common")
 
     # Safety
     enable_auto_submit: bool = Field(default=False)
@@ -103,6 +108,10 @@ class Settings(BaseSettings):
             and self.gmail_credentials_json.exists()
             and self.gmail_sender_email is not None
         )
+
+    @property
+    def outlook_enabled(self) -> bool:
+        return self.outlook_client_id is not None and self.outlook_client_id.strip() != ""
 
 
 # Singleton instance created lazily so tests can monkeypatch easily.

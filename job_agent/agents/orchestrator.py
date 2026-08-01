@@ -158,7 +158,7 @@ class Orchestrator(BaseAgent):
 
     def check_email_updates(self) -> None:
         if not self.email_agent.enabled:
-            logger.info("Email agent not enabled; skipping Gmail checks")
+            logger.info("Email agent not enabled; skipping email checks")
             return
 
         jobs = self.excel.list_applications()
@@ -175,6 +175,22 @@ class Orchestrator(BaseAgent):
             job.notes = update.reason
             self._persist(job)
             logger.info(f"Updated job {job.id} to {job.status.value} from email")
+
+    def create_email_drafts(self) -> list:
+        """Create human-tone draft replies for recruiter emails matching applied jobs."""
+        if not self.email_agent.enabled:
+            logger.info("Email agent not enabled; skipping draft creation")
+            return []
+
+        jobs = self.excel.list_applications()
+        submitted = [j for j in jobs if j.status in {ApplicationStatus.SUBMITTED, ApplicationStatus.QUEUED}]
+        if not submitted:
+            logger.info("No submitted/queued jobs to create email drafts for")
+            return []
+
+        drafts = self.email_agent.create_drafts_for_jobs(submitted)
+        logger.info(f"Created {len(drafts)} email drafts for review")
+        return drafts
 
     async def run(self, jobs: Iterable[JobApplication] | None = None) -> list[JobApplication]:
         if jobs is not None:

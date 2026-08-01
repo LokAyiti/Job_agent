@@ -10,6 +10,7 @@ from playwright.sync_api import sync_playwright, Page, Browser, BrowserContext
 
 from config.settings import Settings
 from models.job_models import JobListing
+from utils.captcha_solver import CaptchaSolver
 
 logger = logging.getLogger(__name__)
 
@@ -103,22 +104,45 @@ class GovernmentJobsScraper:
             return
 
         logger.info("Navigating to login page")
-        page.goto(f"{self.BASE_URL}/careers/home/login", wait_until="domcontentloaded")
+        page.goto(f"{self.BASE_URL}/Applications/Submitted", wait_until="domcontentloaded")
         page.wait_for_load_state("networkidle")
 
-        if self._detect_captcha(page):
-            logger.warning("CAPTCHA detected on login page; manual intervention required")
-            raise RuntimeError("CAPTCHA detected on login page")
+        # Dismiss the cookie consent banner if it appears.
+        try:
+            page.locator("button.osano-cm-accept").first.click(timeout=3000)
+            page.wait_for_timeout(500)
+        except Exception:
+            pass
 
-        page.fill("input#username", Settings.LOGIN_EMAIL)
-        page.fill("input#password", Settings.LOGIN_PASSWORD)
-        page.click("button[type='submit']")
+        # Fill the visible governmentjobs.com sign-in form.
+        page.fill('input#username-or-email-field:visible', Settings.LOGIN_EMAIL)
+        page.fill('input#sign-in-password-field:visible', Settings.LOGIN_PASSWORD)
+        page.locator('button:has-text("Sign In"):visible').first.click()
         page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(3000)
 
-        if "login" in page.url.lower():
-            raise RuntimeError("Login failed; still on login page")
+        if self._is_logged_in(page):
+            logger.info("Login successful")
+            return
 
-        logger.info("Login successful")
+        # If still not logged in, a visible CAPTCHA may be blocking submission.
+        logger.warning("Login failed; checking for CAPTCHA challenge")
+        if not Settings.CAPTCHA_API_KEY:
+            raise RuntimeError("Login failed and 2Captcha API key is not configured")
+        try:
+            solver = CaptchaSolver(Settings.CAPTCHA_API_KEY, timeout=120)
+            solver.solve_on_page(page)
+            page.wait_for_timeout(3000)
+            if not self._is_logged_in(page):
+                raise RuntimeError("Login still failed after CAPTCHA attempt")
+            logger.info("Login successful after CAPTCHA")
+        except Exception as exc:
+            logger.warning("Failed to solve CAPTCHA on login page: %s", exc)
+            raise RuntimeError(f"Login failed or CAPTCHA unsolvable: {exc}") from exc
+
+    def _is_logged_in(self, page: Page) -> bool:
+        """Return True if the page shows a logged-in session."""
+        return page.locator("a.sign-out").count() > 0 or page.locator('input#sign-in-password-field:visible').count() == 0
 
     def _parse_search_page_html(self, html: str) -> list[JobListing]:
         """Parse job listings from the search result HTML."""
@@ -186,7 +210,10 @@ class GovernmentJobsScraper:
 
         try:
             page.goto(listing.application_url, wait_until="domcontentloaded")
-            page.wait_for_load_state("networkidle", timeout=15000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=30000)
+            except Exception:
+                logger.warning("Network idle timeout for job details %s", listing.application_url)
             time.sleep(2)
 
             html = page.content()
@@ -289,7 +316,10 @@ class GovernmentJobsScraper:
                 logger.info("Searching state: %s", state)
                 search_url = self._build_search_url(state)
                 page.goto(search_url, wait_until="domcontentloaded")
-                page.wait_for_load_state("networkidle", timeout=15000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=30000)
+                except Exception:
+                    logger.warning("Network idle timeout for %s; continuing after brief wait", state)
                 time.sleep(2)
 
                 # Check for no results

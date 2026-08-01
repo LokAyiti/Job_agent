@@ -2,6 +2,7 @@
 import pytest
 
 from job_agent.sites.base import AdapterRegistry, FormChallenge
+from job_agent.sites.governmentjobs import GovernmentJobsAdapter
 from job_agent.sites.greenhouse import GreenhouseAdapter
 from job_agent.sites.icims import iCIMSAdapter
 from job_agent.sites.registry import build_default_registry
@@ -32,6 +33,13 @@ class FakePage:
             self._body_text if selector == "body" else "",
         )
 
+    async def wait_for_selector(self, selector: str, **kwargs):
+        # Normalize visible selector to the same key used in counts.
+        key = selector.replace(":visible", "")
+        if self._counts.get(key, 0) > 0:
+            return object()
+        raise TimeoutError()
+
     async def inner_text(self) -> str:
         return self._body_text
 
@@ -49,6 +57,7 @@ def registry():
         ("https://company.myworkdayjobs.com/en-US/job/123", "workday"),
         ("https://company.icims.com/jobs/123?mode=job", "icims"),
         ("https://company.applicantpro.com/jobs/123", "icims"),
+        ("https://www.governmentjobs.com/jobs/5259259-0/meter-data-analyst", "governmentjobs"),
     ],
 )
 def test_registry_detects_platform(registry, url, expected):
@@ -64,6 +73,34 @@ def test_registry_get_adapter(registry):
 
     adapter = registry.get_adapter("https://company.icims.com/jobs/123")
     assert isinstance(adapter, iCIMSAdapter)
+
+    adapter = registry.get_adapter("https://www.governmentjobs.com/jobs/5259259-0/meter-data-analyst")
+    assert isinstance(adapter, GovernmentJobsAdapter)
+
+
+@pytest.mark.asyncio
+async def test_governmentjobs_adapter_interface():
+    adapter = GovernmentJobsAdapter()
+    assert adapter.name() == "governmentjobs"
+    assert adapter.platform_name() == "governmentjobs"
+
+    # Login required when a password field is visible.
+    login_page = FakePage(
+        "https://www.governmentjobs.com/Applications/Submitted",
+        counts={"input#sign-in-password-field": 1},
+    )
+    assert await adapter.is_login_required(login_page) is True
+
+    # Already logged in when the application wizard is shown.
+    apply_page = FakePage(
+        "https://www.governmentjobs.com/jobs/5259259-0/meter-data-analyst/apply",
+        counts={"text='Applying as:'": 1},
+    )
+    assert await adapter._is_logged_in(apply_page) is True
+
+    # Not logged in when neither sign-out nor applying-as is present.
+    landing_page = FakePage("https://www.governmentjobs.com/jobs/123")
+    assert await adapter._is_logged_in(landing_page) is False
 
 
 def test_registry_unknown_url_raises():

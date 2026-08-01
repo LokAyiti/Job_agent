@@ -65,6 +65,11 @@ job_application_system/**/*.pyc
 job_application_system/inspect*.html
 job_application_system/inspect*.png
 
+# Root-level debugging artifacts from browser/form inspection
+inspect*.html
+inspect*.png
+=1.28.0
+
 # Docker / infrastructure (centralize outside project)
 docker-compose*.yml
 qdrant_storage/

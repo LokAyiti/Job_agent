@@ -54,6 +54,23 @@ def run(jobs_path: Path | None, dry_run: bool | None, env_file: Path | None):
     click.echo(f"Log written to: {settings.log_file}")
 
 
+@cli.command("drafts")
+@click.option("--env-file", type=click.Path(path_type=Path), default=None)
+def drafts(env_file: Path | None):
+    """Scan Gmail/Outlook and create draft replies for recruiter emails."""
+    if env_file:
+        import os
+        os.environ.setdefault("ENV_FILE", str(env_file))
+        reload_settings()
+
+    settings = get_settings()
+    orchestrator = Orchestrator(settings)
+    created = orchestrator.create_email_drafts()
+    click.echo(f"Created {len(created)} draft replies for review")
+    for draft in created:
+        click.echo(f"  [{draft.provider}] {draft.to}: {draft.subject}")
+
+
 @cli.command()
 @click.option("--env-file", type=click.Path(path_type=Path), default=None)
 def sync(env_file: Path | None):
@@ -118,6 +135,9 @@ def show_config():
     click.echo(f"enable_auto_submit: {settings.enable_auto_submit}")
     click.echo(f"google_sync_enabled: {settings.google_sync_enabled}")
     click.echo(f"gmail_enabled: {settings.gmail_enabled}")
+    click.echo(f"outlook_enabled: {settings.outlook_enabled}")
+    click.echo(f"captcha_enabled: {settings.captcha_enabled}")
+    click.echo(f"human_in_the_loop: {settings.human_in_the_loop}")
 
 
 if __name__ == "__main__":

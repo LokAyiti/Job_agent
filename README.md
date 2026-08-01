@@ -116,7 +116,8 @@ python -m job_agent.cli show-config
 python -m job_agent.cli create-sample-jobs
 python -m job_agent.cli run --jobs data/jobs.json --dry-run
 python -m job_agent.cli run --jobs data/jobs.json        # respects ENABLE_AUTO_SUBMIT
-python -m job_agent.cli email                            # check Gmail for recruiter updates
+python -m job_agent.cli email                            # check all enabled inboxes for recruiter updates
+python -m job_agent.cli drafts                           # create draft replies for recruiter emails
 python -m job_agent.cli sync                             # push Excel + resumes to Google
 ```
 
@@ -136,9 +137,34 @@ python -m job_agent.cli sync                             # push Excel + resumes 
 2. In `.env`:
    - `GMAIL_CREDENTIALS_JSON=secrets/gmail-credentials.json`
    - `GMAIL_SENDER_EMAIL=your.email@example.com`
-3. Run `python -m job_agent.cli email`.
+3. Run `python -m job_agent.cli email` or `python -m job_agent.cli drafts`.
 
 The first run will open a browser for OAuth consent.
+
+## Outlook / Microsoft 365 integration
+
+1. Register an app in Azure AD: https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade
+2. Add **delegated** Microsoft Graph permissions:
+   - `Mail.Read` — read inbox
+   - `Mail.ReadWrite` — create drafts
+   - `Mail.Send` — send emails (if you later enable direct send)
+3. Copy the **Application (client) ID** to `.env`:
+   - `OUTLOOK_CLIENT_ID=your-client-id`
+4. Set `OUTLOOK_USE_DEVICE_CODE=true` to authenticate on any device, or `false` for an interactive browser window.
+5. Run `python -m job_agent.cli email` to scan for recruiter updates or `python -m job_agent.cli drafts` to create reviewable draft replies.
+
+The agent never sends Outlook emails by default; it only creates drafts for you to review and send.
+
+## Email draft reply scenarios
+
+When you run `python -m job_agent.cli drafts`, the agent scans the last 7 days of enabled inboxes and creates drafts for recruiter emails matching submitted jobs. It chooses a human-tone template based on the message:
+
+- **availability** — interview/phone-screen scheduling requests
+- **thank_you** — post-interview thank-you note
+- **follow_up** — status check / follow-up
+- **general** — any other recruiter update
+
+All drafts are saved in your Outlook/Gmail drafts folder for review before sending.
 
 ## Adding a new site adapter
 

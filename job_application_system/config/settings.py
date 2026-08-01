@@ -59,7 +59,7 @@ class Settings:
     DATABRICKS_OPUS_ENDPOINT = os.getenv("DATABRICKS_OPUS_ENDPOINT", "")
 
     # CAPTCHA
-    CAPTCHA_API_KEY = os.getenv("2CAPTCHA_KEY", "") or os.getenv("2captcha_key", "")
+    CAPTCHA_API_KEY = os.getenv("2CAPTCHA_API_KEY", "") or os.getenv("2captcha_key", "") or os.getenv("2CAPTCHA_KEY", "") or os.getenv("TWOCAPTCHA_API_KEY", "")
 
     # LLM model selection
     PRIMARY_MODEL = os.getenv("PRIMARY_MODEL", "openai/gpt-4o")
