@@ -1,0 +1,2 @@
+class OracleAdapter(SiteAdapter):
+    pass

@@ -9,11 +9,11 @@ import re
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
-import requests
 from loguru import logger
 
 from job_agent.discovery.base import JobDiscoverySource
 from job_agent.models import JobApplication
+from job_agent.scrapling_client import get_scrapling_client
 
 
 # URL path/hostname fragments that strongly suggest a job posting.
@@ -43,6 +43,7 @@ class CompanyPagesDiscovery(JobDiscoverySource):
     def __init__(self, pages: list[str] | None = None, timeout: int = 30):
         self.pages = pages or []
         self.timeout = timeout
+        self.client = get_scrapling_client()
 
     async def discover(self, profile: dict) -> list[JobApplication]:
         preferences = profile.get("preferences", {})
@@ -74,12 +75,7 @@ class CompanyPagesDiscovery(JobDiscoverySource):
         return jobs
 
     def _discover_page(self, page_url: str) -> list[JobApplication]:
-        response = requests.get(page_url, timeout=self.timeout, headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            ),
-        })
+        response = self.client.fetch(page_url)
         response.raise_for_status()
         html = response.text
         return self._parse_jobs_from_html(html, page_url)

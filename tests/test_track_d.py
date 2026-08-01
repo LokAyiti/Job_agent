@@ -422,7 +422,7 @@ def test_linkedin_discovery_parses_html_when_enabled():
     """
 
     discovery = LinkedInDiscovery(max_results=10)
-    with patch("httpx.AsyncClient.get") as mock_get:
+    with patch("requests.get") as mock_get:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.text = html_response
@@ -471,7 +471,7 @@ def test_indeed_discovery_parses_rss_when_enabled():
     """
 
     discovery = IndeedDiscovery(max_results=10)
-    with patch("httpx.AsyncClient.get") as mock_get:
+    with patch("requests.get") as mock_get:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.text = rss_response

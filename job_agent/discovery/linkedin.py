@@ -2,8 +2,7 @@
 
 LinkedIn aggressively blocks automated scraping and its Terms of Service
 restrict automated collection. This source uses the public jobs-guest API with
-modest request volume, rate-limit-aware pacing, and rotating user agents. It is
-disabled by default and must be enabled with
+modest request volume and is disabled by default. It must be enabled with
 `preferences.enable_linkedin_discovery: true` in profile.json.
 
 For production-scale extraction, prefer a paid API or manual job feed.
@@ -14,13 +13,12 @@ import asyncio
 import urllib.parse
 from typing import Any
 
-import httpx
-from fake_useragent import UserAgent
 from loguru import logger
 from lxml import html
 
 from job_agent.discovery.base import JobDiscoverySource
 from job_agent.models import JobApplication
+from job_agent.scrapling_client import get_scrapling_client
 from job_agent.utils.circuit_breaker import domain_breaker_registry
 
 
@@ -35,7 +33,7 @@ class LinkedInDiscovery(JobDiscoverySource):
     def __init__(self, max_results: int = 25, request_timeout: float = 30.0):
         self.max_results = max(max_results, 1)
         self.request_timeout = request_timeout
-        self._ua = UserAgent(browsers=["Chrome", "Edge", "Firefox"], platforms=["desktop"])
+        self.client = get_scrapling_client()
 
     async def discover(self, profile: dict) -> list[JobApplication]:
         preferences = profile.get("preferences", {})
@@ -70,51 +68,37 @@ class LinkedInDiscovery(JobDiscoverySource):
 
     async def _fetch_listings(self, keywords: str, location: str) -> list[JobApplication]:
         jobs: list[JobApplication] = []
-        # LinkedIn's seeMore endpoint paginates by a single start parameter.
-        # We fetch a few small pages to stay polite.
         page_size = 10
         pages = (self.max_results + page_size - 1) // page_size
 
-        async with httpx.AsyncClient(timeout=self.request_timeout, follow_redirects=True) as client:
-            for page in range(pages):
-                start = page * page_size
-                params = {
-                    "keywords": keywords,
-                    "location": location,
-                    "start": start,
-                    "count": page_size,
-                }
-                headers = {
-                    "User-Agent": self._ua.random,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.5",
-                    "Accept-Encoding": "gzip, deflate, br",
-                    "DNT": "1",
-                    "Connection": "keep-alive",
-                }
+        for page in range(pages):
+            start = page * page_size
+            params = {
+                "keywords": keywords,
+                "location": location,
+                "start": start,
+                "count": page_size,
+            }
+            url = f"{self.SEARCH_URL}?{urllib.parse.urlencode(params)}"
 
-                try:
-                    response = await client.get(
-                        self.SEARCH_URL,
-                        params=params,
-                        headers=headers,
-                    )
-                    response.raise_for_status()
-                except httpx.HTTPStatusError as exc:
-                    logger.warning(f"LinkedIn page {page} HTTP error: {exc.response.status_code}")
-                    break
+            try:
+                response = self.client.fetch(url, stealth=True)
+                response.raise_for_status()
+            except Exception as exc:
+                logger.warning(f"LinkedIn page {page} fetch error: {exc}")
+                break
 
-                page_jobs = self._parse_html(response.text)
-                if not page_jobs:
-                    break
-                jobs.extend(page_jobs)
+            page_jobs = self._parse_html(response.text)
+            if not page_jobs:
+                break
+            jobs.extend(page_jobs)
 
-                # Polite pacing between paginated requests.
-                if page < pages - 1:
-                    await asyncio.sleep(2.0)
+            # Polite pacing between paginated requests.
+            if page < pages - 1:
+                await asyncio.sleep(2.0)
 
-                if len(jobs) >= self.max_results:
-                    break
+            if len(jobs) >= self.max_results:
+                break
 
         return jobs[: self.max_results]
 

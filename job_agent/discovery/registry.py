@@ -6,6 +6,7 @@ from job_agent.discovery.greenhouse import GreenhouseDiscovery
 from job_agent.discovery.indeed import IndeedDiscovery
 from job_agent.discovery.lever import LeverDiscovery
 from job_agent.discovery.linkedin import LinkedInDiscovery
+from job_agent.discovery.universal import UniversalDiscovery
 
 
 class DiscoveryRegistry:
@@ -19,6 +20,7 @@ class DiscoveryRegistry:
             "company_pages": CompanyPagesDiscovery,
             "linkedin": LinkedInDiscovery,
             "indeed": IndeedDiscovery,
+            "universal": UniversalDiscovery,
         }
 
     def list_sources(self) -> list[str]:
@@ -37,6 +39,9 @@ class DiscoveryRegistry:
         if name == "company_pages":
             pages = profile.get("preferences", {}).get("company_career_pages", [])
             return cls(pages=pages)
+        if name == "universal":
+            urls = profile.get("preferences", {}).get("universal_urls", [])
+            return cls(urls=urls)
         return cls()
 
     def discover_all(self, profile: dict, sources: list[str] | None = None) -> list:

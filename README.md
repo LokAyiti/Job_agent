@@ -5,7 +5,7 @@ End-to-end multi-agent pipeline that discovers jobs, scores fit, tailors resumes
 ## Tracks
 
 - **User Intake** — interactive CLI wizard that produces a unified `profile.json`.
-- **Track C — Job Discovery Agent** — scrapes Greenhouse, Lever, GovernmentJobs, LinkedIn (guest API), Indeed (RSS), and configured company career pages. LinkedIn/Indeed are disabled by default and must be opted in via `profile.json`.
+- **Track C — Job Discovery Agent** — powered by [Scrapling](https://github.com/D4Vinci/Scrapling). Discovers jobs from Greenhouse, Lever, GovernmentJobs, LinkedIn (guest API), Indeed (RSS), company career pages, and any URL via the `universal` spider. LinkedIn/Indeed are disabled by default and must be opted in via `profile.json`.
 - **Track D — Fit Scoring Agent** — combines LLM semantic scoring with keyword overlap to filter out poor matches before any resume work is done.
 - **Track E — Resume Tailoring Engine** — four sub-agents:
   1. JD Analyzer Agent
@@ -29,33 +29,53 @@ job_agent/
   discovery/
     base.py               # JobDiscoverySource protocol
     registry.py           # Central discovery registry
-    greenhouse.py         # Greenhouse API discovery
-    lever.py              # Lever API discovery
+    greenhouse.py         # Greenhouse API discovery (via Scrapling client)
+    lever.py              # Lever API discovery (via Scrapling client)
     governmentjobs.py     # GovernmentJobs.com scraper
-    company_pages.py      # Generic career-page crawler
-    linkedin.py           # LinkedIn scaffolding (disabled by default)
-    indeed.py             # Indeed scaffolding (disabled by default)
+    company_pages.py      # Generic career-page crawler (via Scrapling client)
+    linkedin.py           # LinkedIn discovery (via Scrapling client, disabled by default)
+    indeed.py             # Indeed RSS discovery (via Scrapling client, disabled by default)
+    universal.py          # Generic Scrapling spider for any career page
+  sites/
+    base.py               # SiteAdapter protocol
+    registry.py           # Central adapter registry (built-in + approved generated adapters)
+    adapter_generator.py  # LLM + heuristic adapter generator from DOM snapshots
+    approval_registry.py  # Tracks generated-adapter drafts and approvals
+    scrapling_mixin.py    # Stealth page snapshots for Cloudflare-protected submissions
+    generated_drafts/     # Approved auto-generated adapters
+    greenhouse.py         # Greenhouse adapter
+    workday.py            # Workday adapter
+    icims.py              # iCIMS adapter
+  scrapling_client.py     # HTTP client to the Scrapling service
   persistence/
     credentials.py        # Encrypted SQLite account store
     excel_logger.py       # applications.xlsx log
     sqlite_queue.py       # Crash-recovery queue
     google_sync.py        # Google Drive/Sheets sync
-  sites/
-    base.py               # SiteAdapter protocol
-    registry.py           # Central adapter registry
-    greenhouse.py         # Greenhouse adapter
-    workday.py            # Workday adapter
-    icims.py              # iCIMS adapter
   utils/
     encryption.py         # Fernet credential vault
-    proxy_rotator.py     # Proxy rotation
-    humanizer.py          # Stealth scripts and human-like pacing
+    proxy_rotator.py     # Legacy compatibility wrapper; proxying is now handled by Scrapling
+    humanizer.py          # Human-like pacing and typing helpers
     circuit_breaker.py    # Circuit breaker + retry helpers
     structured_logging.py # loguru configuration
   captcha.py              # 2Captcha integration
   config.py               # pydantic-settings + .env
   models.py               # JobApplication, Resume, Account, statuses
   cli.py                  # Command-line entry
+
+scrapling_service/        # FastAPI service running Scrapling fetchers + spiders
+  Dockerfile
+  main.py
+  spiders.py
+  proxy.py
+  requirements.txt
+
+chrome_extension/         # Browser extension that captures unknown ATS pages
+chrome_extension/
+  manifest.json
+  popup.html
+  popup.js
+  content.js
 
 job_application_system/
   agents/
@@ -67,6 +87,14 @@ job_application_system/
     cover_letter_builder.py  # Cover-letter generator
     consistency_ledger.py    # Maps every generated resume to source + claims
   tailor_bridge.py        # Subprocess bridge called by Track B
+
+scripts/
+  benchmark_discovery.py  # Compare Scrapling discovery success rates and timings
+  run_scrapling_service.sh # Local dev helper (Unix)
+  run_scrapling_service.ps1 # Local dev helper (Windows)
+
+docker-compose.yml        # Two-container orchestration: job-agent + scrapling-service
+Dockerfile                # Main job-agent container
 ```
 
 ## Quick start
@@ -98,9 +126,11 @@ Required for any run:
 Optional:
 - `LOGIN_EMAIL` + `LOGIN_PASSWORD` — used to create candidate accounts on platforms that require sign-up (Workday, iCIMS, etc.). Encrypted at rest in the local SQLite credential store.
 - `TWOCAPTCHA_API_KEY` — automatic CAPTCHA solving; leave blank to rely on human-in-the-loop.
-- `OPENROUTER_API_KEY` / `DATABRICKS_TOKEN` + `DATABRICKS_SONNET_ENDPOINT` — LLM providers for scoring and resume tailoring. Set these in `job_application_system/.env`. OpenRouter is preferred; Databricks is used as a runtime fallback. `PRIMARY_MODEL` defaults to `openai/gpt-4o`.
+- `OPENROUTER_API_KEY` / `DATABRICKS_TOKEN` + `DATABRICKS_SONNET_ENDPOINT` — LLM providers for scoring, resume tailoring, and adapter generation. Set these in `job_application_system/.env`. OpenRouter is preferred; Databricks is used as a runtime fallback. `PRIMARY_MODEL` defaults to `openai/gpt-4o`.
 - Google service-account JSON path + sheet/drive IDs
 - Gmail credentials JSON + sender email
+- `SCRAPLING_SERVICE_URL` (default `http://localhost:8723`) and `SCRAPLING_USE_SERVICE` (default `false`) — see Scrapling service section.
+- `PROXY_LIST` — passed to the Scrapling service fetchers and spiders.
 
 4. Run the intake wizard to create a unified `profile.json`:
 
@@ -130,7 +160,7 @@ The log is at `logs/applications.xlsx`.
 ## How the pipeline works
 
 1. **User Intake** writes a single `profile.json` with your targets and fabrication tolerance.
-2. **Track C — Job Discovery** fetches postings from Greenhouse, Lever, GovernmentJobs, LinkedIn, Indeed, and any configured company career pages. LinkedIn/Indeed are disabled by default and can be enabled in `profile.json`.
+2. **Track C — Job Discovery** routes all scraping through the Scrapling service. Built-in sources cover Greenhouse, Lever, GovernmentJobs, LinkedIn, Indeed, and company career pages. The `universal` source can crawl any career URL using the generic Scrapling spider with adaptive selectors and pause/resume checkpoints. LinkedIn/Indeed are disabled by default and can be enabled in `profile.json`.
 3. **Track D — Fit Scoring** combines an LLM semantic score with keyword overlap and drops jobs below `MIN_FIT_SCORE`.
 4. **Track E — Resume Tailoring Engine** runs four sub-agents:
    - JD Analyzer extracts structured requirements.
@@ -146,7 +176,7 @@ The log is at `logs/applications.xlsx`.
 - `ENABLE_AUTO_SUBMIT=false` (default) makes the Submission Agent stop at the final submit button and log the job as `queued` instead of actually submitting. **Keep this false until you are ready to apply for real.**
 - `HUMAN_IN_THE_LOOP=true` pauses and flags jobs as `needs_human` when CAPTCHA cannot be solved automatically, login/account creation fails, or an unsupported form is detected.
 - `MAX_RETRIES`, `RETRY_DELAY_SECONDS`, and `DELAY_BETWEEN_JOBS_SECONDS` control rate limiting and retries.
-- Each browser context uses a rotating realistic desktop user agent (`fake-useragent`) and `playwright-stealth` anti-detection scripts to reduce bot fingerprints.
+- All browser-based discovery and stealth submission flows are routed through the **Scrapling service** (see below), which handles TLS/JA3 fingerprinting, Cloudflare challenge solving, rotating user agents, and real-browser rendering so the host code does not need to manage anti-detection scripts itself.
 
 ## Platform-specific adapters
 
@@ -186,17 +216,18 @@ Then set it in `.env` and delete the auto-generated `.credential_key` file.
 
 ### Proxy rotation
 
-Set a comma-separated proxy list:
+Set a comma-separated proxy list in `.env`:
 
 ```env
 PROXY_LIST=http://proxy1.example.com:8080,user:pass@proxy2.example.com:8080
 ```
 
-The Submission Agent assigns proxies **deterministically per domain** (`job_agent.utils.proxy_rotator.get_for_domain`) so the same platform always uses the same proxy across sessions. This keeps account login sessions stable on ATS portals like Workday and iCIMS. A random proxy is still used when no domain is known. Leave blank to run without a proxy.
+The Scrapling service passes these proxies to its fetcher and spider sessions. The Submission Agent still assigns proxies **deterministically per domain** (`job_agent.utils.proxy_rotator.get_for_domain`) so the same platform always uses the same proxy across sessions, keeping account login sessions stable on ATS portals like Workday and iCIMS. Leave blank to run without a proxy. For Docker, the `scrapling-service` container receives `PROXY_LIST` via `docker-compose.yml`.
 
 ### Stealth browsing and human pacing
 
-- `USE_STEALTH=true` injects anti-detection scripts into each page.
+- `SCRAPLING_USE_SERVICE=true` (the default inside Docker) routes all browser traffic through the Scrapling service, which solves Cloudflare Turnstile/interstitial challenges, spoofs TLS/JA3 fingerprints, and rotates browser fingerprints automatically.
+- `USE_STEALTH=true` keeps the legacy local Playwright path enabled only when `SCRAPLING_USE_SERVICE=false`.
 - `BROWSER_HEADLESS=true` runs the browser without a UI; set to `false` for manual intervention.
 - `HUMANIZER_MIN_DELAY`, `HUMANIZER_MAX_DELAY`, `TYPING_DELAY_MIN`, `TYPING_DELAY_MAX` tune randomized delays between actions and keystrokes.
 - `DELAY_BETWEEN_JOBS_SECONDS` + `JITTER_BETWEEN_JOBS=true` randomize wait time between applications to reduce bot fingerprints.
@@ -219,6 +250,53 @@ When `python -m job_agent.cli email` detects a recruiter reply, it updates the j
 - `LOG_TO_FILE=true` writes to `AGENT_LOG_FILE`.
 - `JSON_LOGS=true` emits JSON lines for ingestion into a log aggregator.
 
+## Scrapling service & Docker
+
+The discovery layer and all Cloudflare-protected browser work run inside a dedicated Docker container so the host machine does not need to install browser binaries or stealth dependencies.
+
+### Local development (no Docker)
+
+By default `SCRAPLING_USE_SERVICE=false`, so the local `job_agent` code falls back to plain HTTP requests for simple API-based sources (Greenhouse, Lever, Indeed RSS, etc.). This keeps unit tests fast and avoids pulling multi-gigabyte browser images during development.
+
+If you want to exercise the Scrapling service locally:
+
+```bash
+scripts/run_scrapling_service.sh      # Unix
+scripts/run_scrapling_service.ps1     # Windows
+```
+
+The service starts on `http://localhost:8723` and exposes:
+
+- `GET /health` — health check.
+- `POST /fetch` — fast static HTTP fetch with `impersonate='chrome'`.
+- `POST /stealth-fetch` — real browser fetch with Cloudflare challenge solving.
+- `POST /dynamic-fetch` — dynamic JavaScript rendering.
+- `POST /spider/run` — generic job-discovery spider with pause/resume checkpointing.
+- `POST /select` — adaptive CSS/XPath extraction.
+- `POST /extension/snapshot` — endpoint used by the Chrome extension to store unknown ATS DOM snapshots.
+- `POST /submit/cloudflare` — stealth page snapshot for submission flows behind Cloudflare.
+
+### Docker Compose
+
+```bash
+docker compose up --build
+```
+
+This starts two containers:
+
+- `job-agent-scrapling` — the Scrapling service (`scrapling_service/`).
+- `job-agent-main` — the main orchestrator, which points `SCRAPLING_SERVICE_URL=http://scrapling-service:8723` and `SCRAPLING_USE_SERVICE=true`.
+
+Only three host directories are mounted into the containers: `data/`, `logs/`, and `resume/` (plus `base resume/` and `base cover letter/` for the main container). All browser binaries, fingerprints, and Scrapling checkpoints live inside the container image.
+
+### Environment variables for Scrapling
+
+```env
+SCRAPLING_SERVICE_URL=http://localhost:8723
+SCRAPLING_USE_SERVICE=false   # set true inside Docker or when running the service
+PROXY_LIST=...                # passed to Scrapling fetchers and spiders
+```
+
 ## CLI commands
 
 ```bash
@@ -235,6 +313,15 @@ python -m job_agent.cli sync                             # push Excel + resumes 
 python -m job_agent.cli schedule --sources greenhouse --time 09:00 --dry-run  # preview daily task
 python -m job_agent.cli schedule --sources greenhouse --time 09:00             # Windows Task Scheduler / cron
 python -m job_agent.cli unschedule                                             # remove scheduled task
+python -m job_agent.cli generate-adapter --snapshot data/snapshot.json         # generate SiteAdapter draft from Chrome extension
+python -m job_agent.cli approve-adapter --platform oraclecloud               # enable draft for autonomous use
+python -m job_agent.cli reject-adapter --platform oraclecloud                # discard draft
+```
+
+To compare Scrapling success rates and timings against the fallback path, use the benchmark script:
+
+```bash
+python scripts/benchmark_discovery.py --urls https://boards.greenhouse.io/gradial --spider
 ```
 
 ## Google integration
@@ -323,15 +410,40 @@ registry = build_default_registry()
 registry.register(MyCompanyAdapter)
 ```
 
-## Chrome extension for complex flows
+## Learning new ATS platforms (Chrome extension + Adapter Generator)
 
-If a site is heavily JavaScript-driven, uses a login wall, or has a multi-step wizard that Playwright cannot capture reliably, the adapter will set the job status to `needs_human`. A future Chrome extension can assist by:
+Not every ATS uses Greenhouse, Workday, or iCIMS. When the Submission Agent lands on an unknown portal (e.g., Oracle Cloud HCM, SAP SuccessFactors, a custom Taleo flow), it saves the job as `needs_human` and prompts you to capture the page with the Chrome extension.
 
-1. Reading the full page DOM from the user's real browser session.
-2. Exposing a `/fill-step` or `/submit-step` API that the Orchestrator calls.
-3. Falling back to the user approving each step before the agent clicks.
+### How the learning loop works
 
-The architecture is already split so the extension can be added as a new `SiteAdapter` or a remote browser bridge without changing the Orchestrator.
+1. Install the extension from `chrome_extension/` in developer mode (Chrome → Extensions → Load unpacked).
+2. Open a job posting or application form on the unknown ATS.
+3. Click **Capture ATS Page** in the popup.
+   - The extension extracts the full rendered DOM.
+   - It extracts every visible form field (`input`, `select`, `textarea`) with labels, types, options, and required flags.
+   - It POSTs the snapshot to `http://localhost:8723/extension/snapshot` (the Scrapling service), which writes it to `data/adapter_drafts/<platform>/<snapshot>.json`.
+4. Generate a draft adapter locally:
+
+   ```bash
+   python -m job_agent.cli generate-adapter --snapshot data/adapter_drafts/oraclecloud/snapshot_20260801_043926.json
+   ```
+
+   The Adapter Generator Agent (heuristic + LLM) reads the snapshot and produces a `SiteAdapter` Python class that implements the `job_agent.sites.base` protocol.
+5. Review the generated Python file in `data/adapter_drafts/<platform>/adapter.py`.
+6. Approve it so the registry can load it automatically:
+
+   ```bash
+   python -m job_agent.cli approve-adapter --platform oraclecloud
+   ```
+
+   Approved adapters are copied to `job_agent/sites/generated_drafts/` and loaded by `job_agent/sites/registry.py` on the next run.
+7. Reject bad drafts:
+
+   ```bash
+   python -m job_agent.cli reject-adapter --platform oraclecloud
+   ```
+
+This creates a closed learning loop: the first encounter with a new platform is human-assisted, but every subsequent posting on that platform is handled autonomously.
 
 ## Running tests
 
@@ -353,9 +465,13 @@ pytest tests/ -v
 
 ## TODO / next steps
 
-- Refine selectors per real company page for Greenhouse, Workday, and iCIMS.
-- Add a Chrome extension adapter for heavily JavaScript-driven or login-walled application flows.
+- Build the Scrapling service image and verify `docker compose up --build` starts both containers cleanly.
+- Run the benchmark script against real job-board URLs (LinkedIn, Indeed, Greenhouse, Workday, iCIMS, and 5+ company career pages) to confirm success-rate and timing improvements.
+- Test the Chrome extension on an unknown ATS (Oracle Cloud HCM, SAP SuccessFactors, Taleo) and validate one full generate-adapter → approve-adapter → auto-submit cycle.
+- Integrate `scrapling_mixin.py` into `ApplicationSubmissionAgent` so Cloudflare-protected submission flows use `StealthySession` automatically.
+- Runtime-test image/grid CAPTCHA paths beyond reCAPTCHA/hCaptcha via the 2Captcha fallback.
 - Migrate credential master key to OS keyring or cloud secret manager for production.
+- Add monitoring for the Scrapling service health and per-domain circuit-breaker state.
 
 ## Security note
 

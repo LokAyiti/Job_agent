@@ -78,7 +78,23 @@ inspect*.png
 headroom.db
 .credential_key
 
+# Scrapling / crawling local cache and checkpoint data
+crawl_data/
+.scrapling_cache/
+session_state/
+cookies*.json
+
+# Secrets / credentials (never commit)
+secrets/
+*.service-account.json
+*.sqlite3
+*.db
+.env
+.env.*
+
+# Docker overrides only — docker-compose.yml is committed
+docker-compose.override.yml
+
 # Docker / infrastructure (centralize outside project)
-docker-compose*.yml
 qdrant_storage/
 

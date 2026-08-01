@@ -2,11 +2,11 @@
 import re
 from typing import Any
 
-import requests
 from loguru import logger
 
 from job_agent.discovery.base import JobDiscoverySource
 from job_agent.models import JobApplication
+from job_agent.scrapling_client import get_scrapling_client
 
 
 class LeverDiscovery(JobDiscoverySource):
@@ -24,6 +24,7 @@ class LeverDiscovery(JobDiscoverySource):
     def __init__(self, site_slugs: list[str] | None = None, timeout: int = 30):
         self.site_slugs = site_slugs or []
         self.timeout = timeout
+        self.client = get_scrapling_client()
 
     async def discover(self, profile: dict) -> list[JobApplication]:
         preferences = profile.get("preferences", {})
@@ -53,7 +54,7 @@ class LeverDiscovery(JobDiscoverySource):
 
     def _fetch_site(self, slug: str) -> list[dict[str, Any]]:
         url = f"https://api.lever.co/v0/postings/{slug}?mode=json"
-        response = requests.get(url, timeout=self.timeout)
+        response = self.client.fetch(url)
         response.raise_for_status()
         data = response.json()
         return data if isinstance(data, list) else []

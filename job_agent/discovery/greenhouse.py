@@ -1,9 +1,9 @@
 """Greenhouse job-board discovery via the public API."""
-import requests
 from loguru import logger
 
 from job_agent.discovery.base import JobDiscoverySource
 from job_agent.models import JobApplication
+from job_agent.scrapling_client import get_scrapling_client
 
 
 class GreenhouseDiscovery(JobDiscoverySource):
@@ -14,6 +14,7 @@ class GreenhouseDiscovery(JobDiscoverySource):
     def __init__(self, board_tokens: list[str] | None = None, timeout: int = 30):
         self.board_tokens = board_tokens or []
         self.timeout = timeout
+        self.client = get_scrapling_client()
 
     async def discover(self, profile: dict) -> list[JobApplication]:
         preferences = profile.get("preferences", {})
@@ -53,7 +54,7 @@ class GreenhouseDiscovery(JobDiscoverySource):
 
     def _fetch_board(self, token: str) -> list[dict]:
         url = f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs"
-        response = requests.get(url, timeout=self.timeout)
+        response = self.client.fetch(url)
         response.raise_for_status()
         data = response.json()
         return data.get("jobs", [])

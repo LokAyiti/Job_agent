@@ -1,0 +1,51 @@
+services:
+  scrapling-service:
+    build:
+      context: ./scrapling_service
+      dockerfile: Dockerfile
+    image: job-agent/scrapling-service:latest
+    container_name: job-agent-scrapling
+    ports:
+      - "8723:8723"
+    env_file:
+      - .env
+    environment:
+      - PROXY_LIST=${PROXY_LIST:-}
+      - ADAPTER_DRAFTS_DIR=/app/data/adapter_drafts
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./resume:/app/resume
+      - ./crawl_data:/app/crawl_data
+    networks:
+      - job-agent-net
+    restart: unless-stopped
+
+  job-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: job-agent/job-agent:latest
+    container_name: job-agent-main
+    depends_on:
+      - scrapling-service
+    env_file:
+      - .env
+    environment:
+      - SCRAPLING_SERVICE_URL=http://scrapling-service:8723
+      - SCRAPLING_USE_SERVICE=true
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./resume:/app/resume
+      - ./base resume:/app/base resume
+      - ./base cover letter:/app/base cover letter
+    networks:
+      - job-agent-net
+    # Override the default keep-alive command with the pipeline you want to run.
+    command: >
+      python -m job_agent.cli pipeline --sources governmentjobs,greenhouse,lever --dry-run
+
+networks:
+  job-agent-net:
+    driver: bridge

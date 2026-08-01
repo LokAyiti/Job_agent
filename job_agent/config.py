@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     credential_master_key: Optional[str] = Field(default=None, validation_alias="CREDENTIAL_MASTER_KEY")
     credential_key_file: Optional[Path] = Field(default=None, validation_alias="CREDENTIAL_KEY_FILE")
 
+    # Scrapling integration
+    scrapling_service_url: str = Field(default="http://localhost:8723")
+    scrapling_use_service: bool = Field(default=False)
+
     # Proxy / anti-detection
     proxy_list: Optional[str] = Field(default=None, validation_alias="PROXY_LIST")
     use_stealth: bool = Field(default=True)
@@ -83,6 +87,10 @@ class Settings(BaseSettings):
     log_to_file: bool = Field(default=False)
     agent_log_file: Path = Field(default=_PROJECT_ROOT / "logs" / "job_agent.log")
     json_logs: bool = Field(default=False)
+
+    # Adapter generator drafts
+    adapter_drafts_dir: Path = Field(default=_PROJECT_ROOT / "data" / "adapter_drafts")
+    adapter_registry_file: Path = Field(default=_PROJECT_ROOT / "data" / "adapter_drafts.json")
 
     # Safety
     enable_auto_submit: bool = Field(default=False)
@@ -115,7 +123,7 @@ class Settings(BaseSettings):
     circuit_breaker_failure_threshold: int = Field(default=3)
     circuit_breaker_recovery_timeout: float = Field(default=120.0)
 
-    @field_validator("resume_dir", "log_file", "sqlite_db", "screenshot_dir", "agent_log_file", mode="before")
+    @field_validator("resume_dir", "log_file", "sqlite_db", "screenshot_dir", "agent_log_file", "adapter_drafts_dir", "adapter_registry_file", mode="before")
     @classmethod
     def _resolve_paths(cls, value):
         if value is None:
@@ -153,6 +161,7 @@ class Settings(BaseSettings):
         self.sqlite_db.parent.mkdir(parents=True, exist_ok=True)
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)
         self.base_resume_dir.mkdir(parents=True, exist_ok=True)
+        self.adapter_drafts_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def captcha_enabled(self) -> bool:

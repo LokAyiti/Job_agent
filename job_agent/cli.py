@@ -485,5 +485,82 @@ def show_config():
     click.echo(f"trusted_platforms: {settings.trusted_platform_list}")
 
 
+@cli.command("generate-adapter")
+@click.option("--snapshot", type=click.Path(exists=True, path_type=Path), required=True)
+@click.option("--platform", default=None, help="Platform name (auto-detected if omitted)")
+@click.option("--output", type=click.Path(path_type=Path), default=None)
+@click.option("--env-file", type=click.Path(path_type=Path), default=None)
+def generate_adapter(snapshot: Path, platform: str | None, output: Path | None, env_file: Path | None):
+    """Generate a SiteAdapter draft from a Chrome-extension snapshot."""
+    if env_file:
+        import os
+
+        os.environ.setdefault("ENV_FILE", str(env_file))
+        reload_settings()
+        _configure_logging_from_settings()
+
+    from job_agent.sites.adapter_generator import generate_adapter as _generate
+    from job_agent.sites.approval_registry import ApprovalRegistry
+
+    settings = get_settings()
+    registry = ApprovalRegistry(settings)
+    data = json.loads(snapshot.read_text(encoding="utf-8"))
+    if platform:
+        data["platform"] = platform
+
+    result = _generate(data, settings)
+    generated_code = result["code"]
+
+    draft_path = registry.add_draft(result["platform"], generated_code, snapshot=str(snapshot))
+    if output:
+        output.write_text(generated_code, encoding="utf-8")
+        click.echo(f"Draft code also written to {output}")
+
+    click.echo(f"Generated adapter for {result['platform']}")
+    click.echo(f"Draft saved to: {draft_path}")
+    click.echo("Review the draft, then run:")
+    click.echo(f"  python -m job_agent.cli approve-adapter --platform {result['platform']}")
+
+
+@cli.command("approve-adapter")
+@click.option("--platform", required=True, help="Platform name to approve")
+@click.option("--env-file", type=click.Path(path_type=Path), default=None)
+def approve_adapter(platform: str, env_file: Path | None):
+    """Approve a generated adapter so it is used for autonomous submissions."""
+    if env_file:
+        import os
+
+        os.environ.setdefault("ENV_FILE", str(env_file))
+        reload_settings()
+        _configure_logging_from_settings()
+
+    from job_agent.sites.approval_registry import ApprovalRegistry
+
+    settings = get_settings()
+    registry = ApprovalRegistry(settings)
+    approved_path = registry.approve(platform)
+    click.echo(f"Approved {platform} adapter: {approved_path}")
+
+
+@cli.command("reject-adapter")
+@click.option("--platform", required=True, help="Platform name to reject")
+@click.option("--env-file", type=click.Path(path_type=Path), default=None)
+def reject_adapter(platform: str, env_file: Path | None):
+    """Reject a generated adapter draft."""
+    if env_file:
+        import os
+
+        os.environ.setdefault("ENV_FILE", str(env_file))
+        reload_settings()
+        _configure_logging_from_settings()
+
+    from job_agent.sites.approval_registry import ApprovalRegistry
+
+    settings = get_settings()
+    registry = ApprovalRegistry(settings)
+    registry.reject(platform)
+    click.echo(f"Rejected {platform} adapter drafts")
+
+
 if __name__ == "__main__":
     cli()

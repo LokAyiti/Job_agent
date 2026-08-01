@@ -1,0 +1,29 @@
+.env
+.env.*
+secrets/
+*.service-account.json
+*.sqlite3
+*.db
+crawl_data/
+.scrapling_cache/
+session_state/
+cookies*.json
+.git
+.venv
+__pycache__/
+*.pyc
+.pytest_cache/
+*.log
+logs/
+resume/
+base resume/
+base cover letter/
+.kimi-code/
+.vscode/
+.gstack/
+job_application_system/logs/
+job_application_system/resume/
+job_application_system/data/*.json
+job_application_system/headroom.db
+headroom.db
+.credential_key

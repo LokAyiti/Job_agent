@@ -1,8 +1,8 @@
 """Indeed job discovery via RSS feed.
 
 Indeed uses strong anti-bot protections and its API terms limit automated
-access. This source uses the public RSS feed with rotating user agents and
-polite request pacing. It is disabled by default and must be enabled with
+access. This source uses the public RSS feed with polite request pacing. It is
+disabled by default and must be enabled with
 `preferences.enable_indeed_discovery: true` in profile.json.
 
 For production-scale extraction, prefer the Indeed Publisher API or a manual
@@ -14,12 +14,11 @@ import asyncio
 import urllib.parse
 from typing import Any
 
-import httpx
-from fake_useragent import UserAgent
 from loguru import logger
 
 from job_agent.discovery.base import JobDiscoverySource
 from job_agent.models import JobApplication
+from job_agent.scrapling_client import get_scrapling_client
 from job_agent.utils.circuit_breaker import domain_breaker_registry
 
 
@@ -43,7 +42,7 @@ class IndeedDiscovery(JobDiscoverySource):
     def __init__(self, max_results: int = 25, request_timeout: float = 30.0):
         self.max_results = max(max_results, 1)
         self.request_timeout = request_timeout
-        self._ua = UserAgent(browsers=["Chrome", "Edge", "Firefox"], platforms=["desktop"])
+        self.client = get_scrapling_client()
 
     async def discover(self, profile: dict) -> list[JobApplication]:
         preferences = profile.get("preferences", {})
@@ -81,21 +80,12 @@ class IndeedDiscovery(JobDiscoverySource):
             "limit": min(self.max_results, 25),
             "sort": "date",
         }
-        headers = {
-            "User-Agent": self._ua.random,
-            "Accept": "application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-        }
+        url = f"{self.RSS_URL}?{urllib.parse.urlencode(params)}"
 
-        async with httpx.AsyncClient(timeout=self.request_timeout, follow_redirects=True) as client:
-            response = await client.get(
-                self.RSS_URL,
-                params=params,
-                headers=headers,
-            )
-            response.raise_for_status()
-            await asyncio.sleep(1.0)
-            return self._parse_rss(response.text)
+        response = self.client.fetch(url, stealth=True)
+        response.raise_for_status()
+        await asyncio.sleep(1.0)
+        return self._parse_rss(response.text)
 
     def _parse_rss(self, text: str) -> list[JobApplication]:
         jobs: list[JobApplication] = []
