@@ -98,7 +98,7 @@ Required for any run:
 Optional:
 - `LOGIN_EMAIL` + `LOGIN_PASSWORD` — used to create candidate accounts on platforms that require sign-up (Workday, iCIMS, etc.). Encrypted at rest in the local SQLite credential store.
 - `TWOCAPTCHA_API_KEY` — automatic CAPTCHA solving; leave blank to rely on human-in-the-loop.
-- `OPENROUTER_API_KEY` / `DATABRICKS_TOKEN` + `DATABRICKS_SONNET_ENDPOINT` — LLM providers for scoring and resume tailoring. OpenRouter is preferred; Databricks is used as a runtime fallback.
+- `OPENROUTER_API_KEY` / `DATABRICKS_TOKEN` + `DATABRICKS_SONNET_ENDPOINT` — LLM providers for scoring and resume tailoring. Set these in `job_application_system/.env`. OpenRouter is preferred; Databricks is used as a runtime fallback. `PRIMARY_MODEL` defaults to `openai/gpt-4o`.
 - Google service-account JSON path + sheet/drive IDs
 - Gmail credentials JSON + sender email
 
