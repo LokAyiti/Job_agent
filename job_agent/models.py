@@ -25,12 +25,17 @@ class JobApplication(BaseModel):
     company: str
     url: str
     location: Optional[str] = None
+    description: Optional[str] = None
+    requirements: Optional[str] = None
     status: ApplicationStatus = ApplicationStatus.PENDING
     resume_path: Optional[Path] = None
     date_applied: Optional[datetime] = None
     error_message: Optional[str] = None
     notes: Optional[str] = None
     retry_count: int = Field(default=0)
+    fit_score: Optional[int] = None
+    source: Optional[str] = None
+    platform: Optional[str] = None
 
     @field_validator("url")
     @classmethod
@@ -56,6 +61,9 @@ class JobApplication(BaseModel):
             "error_message": self.error_message or "",
             "notes": self.notes or "",
             "retry_count": self.retry_count,
+            "fit_score": self.fit_score if self.fit_score is not None else "",
+            "source": self.source or "",
+            "platform": self.platform or "",
         }
 
     @classmethod
@@ -72,6 +80,9 @@ class JobApplication(BaseModel):
             error_message=row.get("error_message") or None,
             notes=row.get("notes") or None,
             retry_count=int(row.get("retry_count", 0)) if row.get("retry_count") else 0,
+            fit_score=int(row["fit_score"]) if row.get("fit_score") else None,
+            source=row.get("source") or None,
+            platform=row.get("platform") or None,
         )
 
 

@@ -1,4 +1,4 @@
-"""Shared utilities for agents: retries, delays, screenshots."""
+"""Shared utilities for agents: retries, delays, screenshots, humanization."""
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -10,14 +10,23 @@ from tenacity import (
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
+    wait_random,
 )
 
 from job_agent.config import Settings
+from job_agent.utils.humanizer import Humanizer, StealthInjector
 
 
 class BaseAgent:
     def __init__(self, settings: Settings):
         self.settings = settings
+        self.humanizer = Humanizer(
+            min_delay=settings.humanizer_min_delay,
+            max_delay=settings.humanizer_max_delay,
+            typing_delay_min=settings.typing_delay_min,
+            typing_delay_max=settings.typing_delay_max,
+        )
+        self.stealth = StealthInjector()
 
     def _screenshot_path(self, prefix: str) -> Path:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -47,11 +56,26 @@ class BaseAgent:
         }
 
 
-def with_retries(max_attempts: int, retry_delay: int):
-    """Decorator factory for retrying transient operations."""
-    return retry(
-        reraise=True,
-        stop=stop_after_attempt(max(1, max_attempts)),
-        wait=wait_exponential(multiplier=retry_delay, min=retry_delay, max=retry_delay * 10),
-        retry=retry_if_exception_type((ConnectionError, TimeoutError)),
-    )
+class RetryConfig:
+    """Shared retry configuration with jitter and broader exception coverage."""
+
+    @staticmethod
+    def make(max_attempts: int, retry_delay: int, jitter: bool = True):
+        wait_policy = wait_exponential(multiplier=retry_delay, min=retry_delay, max=retry_delay * 10)
+        if jitter:
+            wait_policy = wait_policy + wait_random(0, retry_delay)
+        return retry(
+            reraise=True,
+            stop=stop_after_attempt(max(1, max_attempts)),
+            wait=wait_policy,
+            retry=retry_if_exception_type((
+                ConnectionError,
+                TimeoutError,
+                OSError,
+            )),
+        )
+
+
+def with_retries(max_attempts: int, retry_delay: int, jitter: bool = True):
+    """Decorator factory for retrying transient operations with optional jitter."""
+    return RetryConfig.make(max_attempts, retry_delay, jitter=jitter)

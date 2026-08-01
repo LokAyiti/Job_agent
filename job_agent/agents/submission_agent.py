@@ -12,6 +12,9 @@ from job_agent.models import Account, ApplicationStatus, JobApplication
 from job_agent.persistence.credentials import CredentialStore
 from job_agent.sites.base import FormChallenge, SiteAdapter
 from job_agent.sites.registry import build_default_registry
+from job_agent.utils.circuit_breaker import captcha_breaker
+from job_agent.utils.humanizer import StealthInjector
+from job_agent.utils.proxy_rotator import ProxyRotator
 
 
 class SubmissionResult:
@@ -35,8 +38,12 @@ class ApplicationSubmissionAgent(BaseAgent):
     ):
         super().__init__(settings)
         self.registry = registry or build_default_registry()
-        self.credential_store = credential_store or CredentialStore(self.settings.sqlite_db)
+        self.credential_store = credential_store or CredentialStore(
+            self.settings.sqlite_db,
+            settings=self.settings,
+        )
         self.solver = CaptchaSolver(self.settings)
+        self.proxy_rotator = ProxyRotator(self.settings.proxy_list)
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
 
@@ -60,15 +67,27 @@ class ApplicationSubmissionAgent(BaseAgent):
     def _new_context(self) -> BrowserContext:
         if self._browser is None:
             raise RuntimeError("Browser not started. Use async context manager.")
-        return self._browser.new_context(
-            user_agent=(
+        context_kwargs = {
+            "user_agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             ),
-            viewport={"width": 1280, "height": 720},
-            locale="en-US",
-            timezone_id="America/New_York",
-        )
+            "viewport": {"width": 1280, "height": 720},
+            "locale": "en-US",
+            "timezone_id": "America/New_York",
+        }
+        proxy_dict = self.proxy_rotator.to_playwright_dict()
+        if proxy_dict:
+            context_kwargs["proxy"] = proxy_dict
+            logger.info(f"Using proxy: {proxy_dict['server']}")
+        return self._browser.new_context(**context_kwargs)
+
+    async def _open_page(self) -> Page:
+        context = await self._new_context()
+        page = await context.new_page()
+        if self.settings.use_stealth:
+            await self.stealth.inject(page)
+        return page
 
     async def _ensure_authenticated(
         self,
@@ -154,13 +173,17 @@ class ApplicationSubmissionAgent(BaseAgent):
         try:
             context = await self._new_context()
             page = await context.new_page()
+            if self.settings.use_stealth:
+                await self.stealth.inject(page)
+            await self.humanizer.wait(0.5)
 
             await page.goto(job.url, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(2000)
+            await self.humanizer.wait(1.5)
+            await self.humanizer.move_mouse_randomly(page)
 
             await self._ensure_authenticated(page, adapter, job)
             # Give the page a moment to settle after authentication redirects.
-            await page.wait_for_timeout(2000)
+            await self.humanizer.wait(1.0)
 
             form_summary = await adapter.parse_form(page)
             logger.info(f"Form fields detected: {form_summary}")
@@ -173,6 +196,7 @@ class ApplicationSubmissionAgent(BaseAgent):
                     "Resume missing or invalid",
                 )
 
+            await self.humanizer.scroll_naturally(page, pixels=300)
             await adapter.fill_application(
                 page,
                 job,
@@ -182,16 +206,19 @@ class ApplicationSubmissionAgent(BaseAgent):
             )
 
             if self.settings.enable_auto_submit:
-                await self._solve_captcha_if_present(page, adapter)
+                await captcha_breaker.async_call(self._solve_captcha_if_present, page, adapter)
             else:
                 logger.info("Dry-run mode: skipping CAPTCHA solving")
 
+            await self.humanizer.wait(0.5)
             success = await adapter.submit(page, dry_run=not self.settings.enable_auto_submit)
             if not success:
                 return SubmissionResult(
                     ApplicationStatus.FAILED,
                     "Submit step did not complete",
                 )
+
+            await self.humanizer.wait(1.0)
 
             status = ApplicationStatus.SUBMITTED if self.settings.enable_auto_submit else ApplicationStatus.QUEUED
             message = (
@@ -236,6 +263,9 @@ class ApplicationSubmissionAgent(BaseAgent):
                 await context.close()
 
     async def apply_with_retry(self, job: JobApplication, resume_path: Path | None = None) -> SubmissionResult:
+        import asyncio
+        import random
+
         last_result = None
         for attempt in range(1, self.settings.max_retries + 1):
             last_result = await self.apply(job, resume_path)
@@ -243,5 +273,9 @@ class ApplicationSubmissionAgent(BaseAgent):
                 return last_result
             if last_result.status == ApplicationStatus.NEEDS_HUMAN:
                 return last_result
-            logger.warning(f"Retry {attempt}/{self.settings.max_retries} for job {job.id}")
+            if attempt < self.settings.max_retries:
+                jitter = random.uniform(0.5, 1.5) if self.settings.jitter_between_jobs else 1.0
+                delay = self.settings.retry_delay_seconds * jitter
+                logger.warning(f"Retry {attempt}/{self.settings.max_retries} for job {job.id}; waiting {delay:.1f}s")
+                await asyncio.sleep(delay)
         return last_result or SubmissionResult(ApplicationStatus.FAILED, "Exhausted retries")

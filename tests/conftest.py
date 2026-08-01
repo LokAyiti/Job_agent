@@ -19,6 +19,7 @@ def temp_settings(monkeypatch):
                 log_file=tmp_path / "logs" / "applications.xlsx",
                 sqlite_db=tmp_path / "logs" / "job_queue.db",
                 screenshot_dir=tmp_path / "logs" / "screenshots",
+                credential_key_file=tmp_path / "credential_key",
                 my_name="Test User",
                 my_email="test@example.com",
                 my_phone="555-0000",

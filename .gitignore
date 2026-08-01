@@ -51,6 +51,9 @@ gstack/
 gstack-skills/
 skills.md
 
+# User profile — copy profile.example.json to profile.json and edit locally
+profile.json
+
 # Job application system outputs (Track A generated artifacts)
 job_application_system/resume/
 job_application_system/cover_letter/
@@ -69,6 +72,11 @@ job_application_system/inspect*.png
 inspect*.html
 inspect*.png
 =1.28.0
+=43.0.0
+
+# Runtime-generated local state
+headroom.db
+.credential_key
 
 # Docker / infrastructure (centralize outside project)
 docker-compose*.yml

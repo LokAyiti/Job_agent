@@ -18,12 +18,12 @@ Track B consumes tailored resumes produced by Track A from the `resume/` folder.
 ```
 job_agent/
   agents/
-    base_agent.py         # Shared utilities
+    base_agent.py         # Shared utilities, humanizer, retries
     submission_agent.py   # Fills/submits applications, solves CAPTCHA, manages login
-    email_agent.py        # Gmail monitor & responses
+    email_agent.py        # Gmail/Outlook monitor, drafts, responses
     orchestrator.py       # CEO agent
   persistence/
-    credentials.py        # Local SQLite account store (plaintext in this phase)
+    credentials.py        # Encrypted SQLite account store
     excel_logger.py       # applications.xlsx log
     sqlite_queue.py       # Crash-recovery queue
     google_sync.py        # Google Drive/Sheets sync
@@ -33,6 +33,12 @@ job_agent/
     greenhouse.py         # Greenhouse adapter
     workday.py            # Workday adapter
     icims.py              # iCIMS adapter
+  utils/
+    encryption.py         # Fernet credential vault
+    proxy_rotator.py     # Proxy rotation
+    humanizer.py          # Stealth scripts and human-like pacing
+    circuit_breaker.py    # Circuit breaker + retry helpers
+    structured_logging.py # loguru configuration
   captcha.py              # 2Captcha integration
   config.py               # pydantic-settings + .env
   models.py               # JobApplication, Resume, Account, statuses
@@ -106,7 +112,55 @@ For platforms that require a candidate account, the Orchestrator checks the loca
 ## CAPTCHA handling
 
 1. If `TWOCAPTCHA_API_KEY` is set, the Submission Agent sends reCAPTCHA/hCaptcha challenges to 2Captcha and injects the returned token.
-2. If 2Captcha fails, is not configured, or an unsupported challenge type appears, the agent pauses for manual entry (`HUMAN_IN_THE_LOOP=true`) or flags the job as `needs_human`.
+2. If 2Captcha fails repeatedly, the circuit breaker opens to avoid burning API credits, and the agent falls back to human-in-the-loop.
+3. If 2Captcha is not configured or an unsupported challenge type appears, the agent pauses for manual entry (`HUMAN_IN_THE_LOOP=true`) or flags the job as `needs_human`.
+
+## Track C — Reliability / anti-detection
+
+### Credential encryption
+
+Passwords and profile JSON stored in the SQLite credential database are encrypted with Fernet. The master key is loaded from:
+
+1. `CREDENTIAL_MASTER_KEY` env var (base64 Fernet key) — recommended for production.
+2. `CREDENTIAL_KEY_FILE` path.
+3. Auto-generated local key file `.credential_key` if neither is provided.
+
+Generate a production key with:
+
+```python
+from cryptography.fernet import Fernet
+print(Fernet.generate_key().decode())
+```
+
+Then set it in `.env` and delete the auto-generated `.credential_key` file.
+
+### Proxy rotation
+
+Set a comma-separated proxy list:
+
+```env
+PROXY_LIST=http://proxy1.example.com:8080,user:pass@proxy2.example.com:8080
+```
+
+Each browser context rotates through the list. Leave blank to run without a proxy.
+
+### Stealth browsing and human pacing
+
+- `USE_STEALTH=true` injects anti-detection scripts into each page.
+- `BROWSER_HEADLESS=true` runs the browser without a UI; set to `false` for manual intervention.
+- `HUMANIZER_MIN_DELAY`, `HUMANIZER_MAX_DELAY`, `TYPING_DELAY_MIN`, `TYPING_DELAY_MAX` tune randomized delays between actions and keystrokes.
+- `DELAY_BETWEEN_JOBS_SECONDS` + `JITTER_BETWEEN_JOBS=true` randomize wait time between applications to reduce bot fingerprints.
+
+### Retries and circuit breakers
+
+- `MAX_RETRIES` and `RETRY_DELAY_SECONDS` control per-job retry attempts with exponential backoff + jitter.
+- `CIRCUIT_BREAKER_FAILURE_THRESHOLD` and `CIRCUIT_BREAKER_RECOVERY_TIMEOUT` protect external APIs (2Captcha, Gmail, Outlook) from repeated failed calls.
+
+### Structured logging
+
+- `LOG_LEVEL=INFO` or `DEBUG`.
+- `LOG_TO_FILE=true` writes to `AGENT_LOG_FILE`.
+- `JSON_LOGS=true` emits JSON lines for ingestion into a log aggregator.
 
 ## CLI commands
 
@@ -239,12 +293,13 @@ pytest tests/ -v
 
 - Refine selectors per real company page for Greenhouse, Workday, and iCIMS.
 - Add a human-approval gate before real submissions.
-- Encrypt stored credentials (keyring or local master key) before production use.
 - Add more site adapters (Lever, LinkedIn Easy Apply, custom company portals).
 - Integrate Track A resume generation so resumes are produced automatically.
 - Add a Chrome extension adapter for JS-heavy portals.
 - Add CAPTCHA handling for image/grid challenges not covered by 2Captcha.
+- Evaluate stronger stealth libraries (playwright-stealth / patchright) once the basic anti-detection scripts are profiled.
+- Migrate credential master key to OS keyring or cloud secret manager for production.
 
 ## Security note
 
-Account credentials are stored locally in plaintext SQLite in this starting phase. Do not commit `.env` or the SQLite database to git. Replace the credential store with encryption or a system credential store before running against production accounts with sensitive passwords.
+Credentials are encrypted at rest in the local SQLite database. The Fernet master key is read from `CREDENTIAL_MASTER_KEY` or a local key file. Do not commit `.env`, `.credential_key`, or the SQLite database to git. For production, use a proper secret manager (e.g., Azure Key Vault, AWS Secrets Manager, or OS keyring) instead of a plain env var or key file.

@@ -23,6 +23,9 @@ COLUMNS = [
     "error_message",
     "notes",
     "retry_count",
+    "fit_score",
+    "source",
+    "platform",
 ]
 
 
@@ -44,7 +47,17 @@ class ExcelLogger:
         wb.save(self.log_file)
 
     def _load(self):
-        return load_workbook(self.log_file)
+        wb = load_workbook(self.log_file)
+        ws = wb.active
+        headers = [cell.value for cell in ws[1]]
+        if headers != COLUMNS:
+            # Migrate header row to the current schema.
+            ws.delete_rows(1)
+            ws.insert_rows(1)
+            for col_idx, col_name in enumerate(COLUMNS, start=1):
+                ws.cell(row=1, column=col_idx, value=col_name)
+            wb.save(self.log_file)
+        return wb
 
     def list_applications(self) -> list[JobApplication]:
         wb = self._load()
@@ -105,7 +118,7 @@ class ExcelLogger:
     def is_duplicate(self, application: JobApplication) -> bool:
         key = application.unique_key()
         for existing in self.list_applications():
-            if existing.unique_key() == key and existing.status in {
+            if existing.unique_key() == key and existing.status.value in {
                 "submitted",
                 "queued",
                 "in_progress",

@@ -84,7 +84,7 @@ class DatabricksChatClient:
 
 
 class LLMClient:
-    """Headroom-wrapped LLM client using Databricks as primary and OpenRouter as fallback."""
+    """Headroom-wrapped LLM client using OpenRouter as primary and Databricks as fallback."""
 
     def __init__(self, model: str | None = None) -> None:
         self.model = model or Settings.PRIMARY_MODEL
@@ -99,19 +99,18 @@ class LLMClient:
 
     def _build_primary_client(self) -> tuple[Any, str]:
         """Return the best available LLM client and a provider label."""
-        # Prefer Databricks when available because it does not have the
-        # per-request credit limits that the current OpenRouter account has.
+        # Prefer OpenRouter when available per user preference.
+        if Settings.OPENROUTER_API_KEY:
+            logger.info("Using OpenRouter primary")
+            return self._build_openrouter_client(), "openrouter"
+
         if Settings.DATABRICKS_TOKEN and Settings.DATABRICKS_SONNET_ENDPOINT:
             try:
                 client = self._build_databricks_client()
-                logger.info("Using Databricks Sonnet endpoint")
+                logger.info("Using Databricks Sonnet fallback")
                 return client, "databricks"
             except Exception as exc:
                 logger.warning("Databricks client setup failed: %s", exc)
-
-        if Settings.OPENROUTER_API_KEY:
-            logger.info("Using OpenRouter fallback")
-            return self._build_openrouter_client(), "openrouter"
 
         raise RuntimeError(
             "No LLM provider configured. Set OPENROUTER_API_KEY or DATABRICKS_TOKEN + DATABRICKS_SONNET_ENDPOINT in .env"

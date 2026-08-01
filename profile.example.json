@@ -1,0 +1,71 @@
+{
+  "personal_info": {
+    "name": "Lokesh Ayiti",
+    "email": "lokeshayiti@outlook.com",
+    "phone": "+1-815-246-2333",
+    "linkedin": "https://www.linkedin.com/in/lokeshayiti/",
+    "location": "United States",
+    "work_authorization": "US Citizen"
+  },
+  "preferences": {
+    "target_roles": [
+      "Data Analyst",
+      "Data Scientist",
+      "Business Analyst",
+      "AI Engineer",
+      "Applied AI Engineer",
+      "Data Engineer"
+    ],
+    "target_locations": [
+      "United States"
+    ],
+    "salary_floor_usd": 90000,
+    "remote_preference": "any",
+    "willing_to_relocate": false,
+    "fabrication_tolerance": "moderate",
+    "greenhouse_boards": [
+      "gradial",
+      "openai",
+      "anthropic"
+    ]
+  },
+  "assets": {
+    "base_resume_dir": "base resume",
+    "base_resume_template": "base resume/Resume AI Engineer.docx",
+    "base_resume_pdf": "base resume/Resume AI Engineer.pdf",
+    "base_cover_letter_dir": "base cover letter"
+  },
+  "skills": [
+    "SQL",
+    "Python",
+    "Power BI",
+    "Tableau",
+    "Excel",
+    "Azure",
+    "AWS",
+    "Databricks",
+    "PySpark",
+    "Pandas",
+    "NumPy",
+    "ETL/ELT",
+    "Data Warehousing",
+    "Statistics",
+    "Machine Learning",
+    "Git",
+    "Docker",
+    "REST APIs"
+  ],
+  "experience_highlights": [
+    "6+ years analyzing complex datasets and building dashboards for executive stakeholders",
+    "Designed and optimized ETL pipelines using SQL, Python, and Azure Data Factory",
+    "Built predictive models and statistical analyses to drive cost-saving decisions",
+    "Collaborated with cross-functional teams to translate business needs into data products"
+  ],
+  "education": [
+    {
+      "degree": "Master of Science in Data Science",
+      "institution": "University of Illinois at Urbana-Champaign",
+      "year": "2021"
+    }
+  ]
+}
