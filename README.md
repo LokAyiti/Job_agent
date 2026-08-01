@@ -5,7 +5,7 @@ End-to-end multi-agent pipeline that discovers jobs, scores fit, tailors resumes
 ## Tracks
 
 - **User Intake** — interactive CLI wizard that produces a unified `profile.json`.
-- **Track C — Job Discovery Agent** — scrapes Greenhouse, Lever, GovernmentJobs, and configured company career pages; LinkedIn/Indeed scaffolding is included but disabled by default.
+- **Track C — Job Discovery Agent** — scrapes Greenhouse, Lever, GovernmentJobs, LinkedIn (guest API), Indeed (RSS), and configured company career pages. LinkedIn/Indeed are disabled by default and must be opted in via `profile.json`.
 - **Track D — Fit Scoring Agent** — combines LLM semantic scoring with keyword overlap to filter out poor matches before any resume work is done.
 - **Track E — Resume Tailoring Engine** — four sub-agents:
   1. JD Analyzer Agent
@@ -78,7 +78,13 @@ source .venv/Scripts/activate  # Windows Git Bash
 # or .venv\Scripts\activate    # Windows Command Prompt
 ```
 
-2. Copy `.env.example` to `.env` and fill in your real values:
+2. Install dependencies:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+3. Copy `.env.example` to `.env` and fill in your real values:
 
 ```bash
 cp .env.example .env
@@ -90,12 +96,13 @@ Required for any run:
 - `LOG_FILE` (default `logs/applications.xlsx` is fine)
 
 Optional:
-- `LOGIN_EMAIL` + `LOGIN_PASSWORD` — used to create candidate accounts on platforms that require sign-up (Workday, iCIMS, etc.). Stored locally in plaintext in this starting phase.
+- `LOGIN_EMAIL` + `LOGIN_PASSWORD` — used to create candidate accounts on platforms that require sign-up (Workday, iCIMS, etc.). Encrypted at rest in the local SQLite credential store.
 - `TWOCAPTCHA_API_KEY` — automatic CAPTCHA solving; leave blank to rely on human-in-the-loop.
+- `OPENROUTER_API_KEY` / `DATABRICKS_TOKEN` + `DATABRICKS_SONNET_ENDPOINT` — LLM providers for scoring and resume tailoring. OpenRouter is preferred; Databricks is used as a runtime fallback.
 - Google service-account JSON path + sheet/drive IDs
 - Gmail credentials JSON + sender email
 
-3. Run the intake wizard to create a unified `profile.json`:
+4. Run the intake wizard to create a unified `profile.json`:
 
 ```bash
 python -m job_agent.cli intake
@@ -103,16 +110,16 @@ python -m job_agent.cli intake
 
 This writes `profile.json` with your target roles, locations, salary floor, base resume library, and fabrication tolerance (`none | moderate | aggressive`).
 
-4. (Optional) Add base resume templates to `base resume/`.
+5. (Optional) Add base resume templates to `base resume/`.
 
-5. Discover jobs and run the full pipeline in dry-run mode:
+6. Discover jobs and run the full pipeline in dry-run mode:
 
 ```bash
 python -m job_agent.cli discover --sources greenhouse,lever
 python -m job_agent.cli pipeline --sources greenhouse --dry-run
 ```
 
-6. Check the Excel log:
+7. Check the Excel log:
 
 ```bash
 python -m job_agent.cli show-config
@@ -123,7 +130,7 @@ The log is at `logs/applications.xlsx`.
 ## How the pipeline works
 
 1. **User Intake** writes a single `profile.json` with your targets and fabrication tolerance.
-2. **Track C — Job Discovery** fetches postings from Greenhouse, Lever, GovernmentJobs, and any configured company career pages. LinkedIn/Indeed sources exist but are disabled by default.
+2. **Track C — Job Discovery** fetches postings from Greenhouse, Lever, GovernmentJobs, LinkedIn, Indeed, and any configured company career pages. LinkedIn/Indeed are disabled by default and can be enabled in `profile.json`.
 3. **Track D — Fit Scoring** combines an LLM semantic score with keyword overlap and drops jobs below `MIN_FIT_SCORE`.
 4. **Track E — Resume Tailoring Engine** runs four sub-agents:
    - JD Analyzer extracts structured requirements.
@@ -139,7 +146,7 @@ The log is at `logs/applications.xlsx`.
 - `ENABLE_AUTO_SUBMIT=false` (default) makes the Submission Agent stop at the final submit button and log the job as `queued` instead of actually submitting. **Keep this false until you are ready to apply for real.**
 - `HUMAN_IN_THE_LOOP=true` pauses and flags jobs as `needs_human` when CAPTCHA cannot be solved automatically, login/account creation fails, or an unsupported form is detected.
 - `MAX_RETRIES`, `RETRY_DELAY_SECONDS`, and `DELAY_BETWEEN_JOBS_SECONDS` control rate limiting and retries.
-- Each browser context uses a realistic user agent and viewport to reduce bot detection.
+- Each browser context uses a rotating realistic desktop user agent (`fake-useragent`) and `playwright-stealth` anti-detection scripts to reduce bot fingerprints.
 
 ## Platform-specific adapters
 
@@ -153,9 +160,10 @@ For platforms that require a candidate account, the Orchestrator checks the loca
 
 ## CAPTCHA handling
 
-1. If `TWOCAPTCHA_API_KEY` is set, the Submission Agent sends reCAPTCHA/hCaptcha challenges to 2Captcha and injects the returned token.
-2. If 2Captcha fails repeatedly, the circuit breaker opens to avoid burning API credits, and the agent falls back to human-in-the-loop.
-3. If 2Captcha is not configured or an unsupported challenge type appears, the agent pauses for manual entry (`HUMAN_IN_THE_LOOP=true`) or flags the job as `needs_human`.
+1. If `TWOCAPTCHA_API_KEY` is set, the Submission Agent detects and solves **reCAPTCHA**, **hCaptcha**, and generic **image/grid** CAPTCHAs.
+2. For image CAPTCHAs, the agent screenshots the matching `<img>` element, base64-encodes it, and submits it to the 2Captcha `base64` API. The returned text answer is injected into the nearby input field.
+3. If 2Captcha fails repeatedly, the circuit breaker opens to avoid burning API credits, and the agent falls back to human-in-the-loop.
+4. If 2Captcha is not configured or an unsupported challenge type appears, the agent pauses for manual entry (`HUMAN_IN_THE_LOOP=true`) or flags the job as `needs_human`.
 
 ## Track B — Reliability / anti-detection (Action & Persistence Layer)
 
@@ -184,7 +192,7 @@ Set a comma-separated proxy list:
 PROXY_LIST=http://proxy1.example.com:8080,user:pass@proxy2.example.com:8080
 ```
 
-Each browser context rotates through the list. Leave blank to run without a proxy.
+The Submission Agent assigns proxies **deterministically per domain** (`job_agent.utils.proxy_rotator.get_for_domain`) so the same platform always uses the same proxy across sessions. This keeps account login sessions stable on ATS portals like Workday and iCIMS. A random proxy is still used when no domain is known. Leave blank to run without a proxy.
 
 ### Stealth browsing and human pacing
 
@@ -196,7 +204,14 @@ Each browser context rotates through the list. Leave blank to run without a prox
 ### Retries and circuit breakers
 
 - `MAX_RETRIES` and `RETRY_DELAY_SECONDS` control per-job retry attempts with exponential backoff + jitter.
-- `CIRCUIT_BREAKER_FAILURE_THRESHOLD` and `CIRCUIT_BREAKER_RECOVERY_TIMEOUT` protect external APIs (2Captcha, Gmail, Outlook) from repeated failed calls.
+- **Per-domain circuit breakers** (`job_agent.utils.circuit_breaker.DomainCircuitBreakerRegistry`) protect individual ATS platforms: after a domain crosses `CIRCUIT_BREAKER_FAILURE_THRESHOLD` failures, the Orchestrator skips jobs on that domain for `CIRCUIT_BREAKER_RECOVERY_TIMEOUT` seconds.
+- Service-level circuit breakers protect external APIs (2Captcha, Gmail, Outlook) from repeated failed calls.
+
+### Email feedback loop
+
+When `python -m job_agent.cli email` detects a recruiter reply, it updates the job status to `responded` and writes an outcome record to `data/feedback_ledger.json`. Outcomes are also recorded for `failed` (rejection-like) and `needs_human` results.
+
+`job_application_system/agents/resume_tailor.py` and `tailor_bridge.py` read the ledger and feed successful claims into future resume tailoring as hints. Over time, phrasing and claims that produced callbacks receive higher weight, improving the ATS / Recruiter Scoring Agent's output.
 
 ### Structured logging
 
@@ -217,6 +232,9 @@ python -m job_agent.cli run --jobs data/jobs.json        # respects ENABLE_AUTO_
 python -m job_agent.cli email                            # check all enabled inboxes for recruiter updates
 python -m job_agent.cli drafts                           # create draft replies for recruiter emails
 python -m job_agent.cli sync                             # push Excel + resumes to Google
+python -m job_agent.cli schedule --sources greenhouse --time 09:00 --dry-run  # preview daily task
+python -m job_agent.cli schedule --sources greenhouse --time 09:00             # Windows Task Scheduler / cron
+python -m job_agent.cli unschedule                                             # remove scheduled task
 ```
 
 ## Google integration
@@ -336,12 +354,8 @@ pytest tests/ -v
 ## TODO / next steps
 
 - Refine selectors per real company page for Greenhouse, Workday, and iCIMS.
-- Implement LinkedIn/Indeed discovery via Chrome extension or paid API.
-- Add CAPTCHA handling for image/grid challenges not covered by 2Captcha.
-- Add feedback loop from email outcomes to resume tailoring weights.
-- Evaluate stronger stealth libraries (playwright-stealth / patchright).
+- Add a Chrome extension adapter for heavily JavaScript-driven or login-walled application flows.
 - Migrate credential master key to OS keyring or cloud secret manager for production.
-- Add a lightweight cron / Windows Task Scheduler command for daily runs.
 
 ## Security note
 

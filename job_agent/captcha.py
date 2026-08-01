@@ -1,9 +1,11 @@
 """2Captcha integration with human-in-the-loop fallback.
 
-Implements reCAPTCHA and hCaptcha solving via 2Captcha.com. If the service fails
-or the API key is missing, the caller is expected to fall back to
-human-in-the-loop handling.
+Implements reCAPTCHA, hCaptcha, and generic image-based CAPTCHA solving via
+2Captcha.com. If the service fails or the API key is missing, the caller is
+expected to fall back to human-in-the-loop handling.
 """
+import base64
+import io
 import json
 import time
 from dataclasses import dataclass
@@ -22,9 +24,11 @@ class CaptchaUnsolvableError(Exception):
 
 @dataclass
 class CaptchaChallenge:
-    kind: str  # 'recaptcha' or 'hcaptcha'
-    sitekey: str
+    kind: str  # 'recaptcha', 'hcaptcha', or 'image'
+    sitekey: Optional[str] = None
     widget_selector: Optional[str] = None
+    image_selector: Optional[str] = None
+    image_data: Optional[str] = None  # base64 PNG for image CAPTCHAs
 
 
 class CaptchaSolver:
@@ -49,6 +53,9 @@ class CaptchaSolver:
         hcaptcha = await self._detect_hcaptcha(page)
         if hcaptcha:
             return hcaptcha
+        image = await self._detect_image_captcha(page)
+        if image:
+            return image
         return None
 
     async def solve_on_page(self, page: Page) -> bool:
@@ -66,7 +73,7 @@ class CaptchaSolver:
             logger.warning("CAPTCHA widget found but TWOCAPTCHA_API_KEY is not set")
             raise CaptchaUnsolvableError("2Captcha API key not configured")
 
-        logger.info(f"Solving {challenge.kind} challenge with sitekey {challenge.sitekey}")
+        logger.info(f"Solving {challenge.kind} challenge")
         token = await self._solve(challenge, page.url)
         if token is None:
             raise CaptchaUnsolvableError(f"2Captcha failed to solve {challenge.kind}")
@@ -120,12 +127,69 @@ class CaptchaSolver:
             logger.debug(f"hCaptcha detection error: {exc}")
         return None
 
+    async def _detect_image_captcha(self, page: Page) -> Optional[CaptchaChallenge]:
+        """Detect generic image CAPTCHA elements.
+
+        Looks for images with common CAPTCHA-related selectors or attributes.
+        This is best-effort; custom ATS image CAPTCHAs vary widely.
+        """
+        selectors = [
+            "img[src*='captcha']",
+            "img[id*='captcha']",
+            "img[class*='captcha']",
+            "img[alt*='captcha']",
+            "img[src*='challenge']",
+            "img[id*='challenge']",
+            "img[class*='challenge']",
+        ]
+        for selector in selectors:
+            try:
+                count = await page.locator(selector).count()
+                if count == 0:
+                    continue
+                # Use the first matching image.
+                image_element = page.locator(selector).first
+                # Screenshot just the element.
+                screenshot_bytes = await image_element.screenshot()
+                image_data = base64.b64encode(screenshot_bytes).decode("ascii")
+                logger.info(f"Detected image CAPTCHA with selector {selector}")
+                return CaptchaChallenge(
+                    kind="image",
+                    image_selector=selector,
+                    image_data=image_data,
+                )
+            except Exception as exc:
+                logger.debug(f"Image CAPTCHA detection error for {selector}: {exc}")
+                continue
+        return None
+
     async def _solve(self, challenge: CaptchaChallenge, page_url: str) -> Optional[str]:
         if challenge.kind == "recaptcha":
-            method = "userrecaptcha"
-        elif challenge.kind == "hcaptcha":
-            method = "hcaptcha"
-        else:
+            return await self._solve_token_captcha(
+                challenge,
+                page_url,
+                method="userrecaptcha",
+                param_name="googlekey",
+            )
+        if challenge.kind == "hcaptcha":
+            return await self._solve_token_captcha(
+                challenge,
+                page_url,
+                method="hcaptcha",
+                param_name="sitekey",
+            )
+        if challenge.kind == "image":
+            return await self._solve_image_captcha(challenge)
+        return None
+
+    async def _solve_token_captcha(
+        self,
+        challenge: CaptchaChallenge,
+        page_url: str,
+        method: str,
+        param_name: str,
+    ) -> Optional[str]:
+        if not challenge.sitekey:
             return None
 
         try:
@@ -134,8 +198,7 @@ class CaptchaSolver:
                 data={
                     "key": self.settings.twocaptcha_api_key,
                     "method": method,
-                    "googlekey": challenge.sitekey,
-                    "sitekey": challenge.sitekey,
+                    param_name: challenge.sitekey,
                     "pageurl": page_url,
                     "json": 1,
                 },
@@ -151,6 +214,37 @@ class CaptchaSolver:
             logger.warning(f"2Captcha submit failed: {exc}")
             return None
 
+        return await self._poll_for_result(captcha_id)
+
+    async def _solve_image_captcha(self, challenge: CaptchaChallenge) -> Optional[str]:
+        """Submit a base64-encoded image CAPTCHA and return the text answer."""
+        if not challenge.image_data:
+            return None
+
+        try:
+            submit_resp = requests.post(
+                f"{self.BASE_URL}/in.php",
+                data={
+                    "key": self.settings.twocaptcha_api_key,
+                    "method": "base64",
+                    "body": challenge.image_data,
+                    "json": 1,
+                },
+                timeout=30,
+            )
+            submit_resp.raise_for_status()
+            submit_data = submit_resp.json()
+            if submit_data.get("status") != 1:
+                logger.warning(f"2Captcha image submit error: {submit_data}")
+                return None
+            captcha_id = submit_data.get("request")
+        except Exception as exc:
+            logger.warning(f"2Captcha image submit failed: {exc}")
+            return None
+
+        return await self._poll_for_result(captcha_id)
+
+    async def _poll_for_result(self, captcha_id: str) -> Optional[str]:
         logger.info(f"2Captcha task id={captcha_id}, polling for result...")
         deadline = time.time() + self.timeout
         while time.time() < deadline:
@@ -169,7 +263,7 @@ class CaptchaSolver:
                 poll_data = poll_resp.json()
                 if poll_data.get("status") == 1:
                     token = poll_data.get("request")
-                    logger.info(f"2Captcha solved {challenge.kind} token (len={len(token) if token else 0})")
+                    logger.info(f"2Captcha solved task {captcha_id} (len={len(token) if token else 0})")
                     return token
                 elif poll_data.get("request") == "CAPCHA_NOT_READY":
                     await self._async_sleep(5)
@@ -189,6 +283,11 @@ class CaptchaSolver:
             response_field = "#g-recaptcha-response"
         elif challenge.kind == "hcaptcha":
             response_field = "#h-captcha-response"
+        elif challenge.kind == "image":
+            # For image CAPTCHAs, the answer is text; we need a platform-specific input.
+            # Try common selectors, but if none match we leave it to the caller.
+            await self._fill_image_answer(page, challenge, token)
+            return
         else:
             return
 
@@ -222,6 +321,45 @@ class CaptchaSolver:
         except Exception as exc:
             logger.warning(f"Token injection failed: {exc}")
             raise CaptchaUnsolvableError(f"Token injection failed: {exc}")
+
+    async def _fill_image_answer(
+        self, page: Page, challenge: CaptchaChallenge, answer: str
+    ) -> None:
+        """Fill a text answer into a nearby input for image CAPTCHAs."""
+        selectors = [
+            "input[name*='captcha']",
+            "input[id*='captcha']",
+            "input[class*='captcha']",
+            "input[placeholder*='captcha']",
+            "input[aria-label*='captcha']",
+            "input[name*='challenge']",
+            "input[id*='challenge']",
+        ]
+        for selector in selectors:
+            try:
+                locator = page.locator(selector)
+                if await locator.count() > 0:
+                    await locator.fill(answer)
+                    logger.info(f"Filled image CAPTCHA answer into {selector}")
+                    return
+            except Exception as exc:
+                logger.debug(f"Could not fill image CAPTCHA answer into {selector}: {exc}")
+                continue
+
+        # If no obvious input is found, try a generic input near the image.
+        if challenge.image_selector:
+            try:
+                locator = page.locator(f"{challenge.image_selector} ~ input")
+                if await locator.count() > 0:
+                    await locator.first.fill(answer)
+                    logger.info("Filled image CAPTCHA answer into sibling input")
+                    return
+            except Exception as exc:
+                logger.debug(f"Could not fill sibling input: {exc}")
+
+        raise CaptchaUnsolvableError(
+            "Image CAPTCHA solved but no input field found to receive the answer"
+        )
 
     @staticmethod
     def _extract_query_param(url: str, param: str) -> Optional[str]:

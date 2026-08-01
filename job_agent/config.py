@@ -37,6 +37,7 @@ class Settings(BaseSettings):
 
     # Fabrication tolerance for resume tailoring (none | moderate | aggressive)
     fabrication_tolerance: str = Field(default="moderate")
+    tailoring_timeout_seconds: int = Field(default=300)
 
     # Login credentials for first-time platform account creation
     login_email: str = Field(default="")

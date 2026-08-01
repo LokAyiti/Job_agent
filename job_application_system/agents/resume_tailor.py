@@ -78,12 +78,18 @@ class ResumeTailor:
                 ranges.append(match.group(0))
         return ranges
 
-    def tailor(self, job: JobListing, fabrication_tolerance: str = "moderate") -> dict:
+    def tailor(self, job: JobListing, fabrication_tolerance: str = "moderate", feedback_hints: list[dict] | None = None) -> dict:
         """Return tailored resume content as a structured dict."""
         job_analysis = JDAnalyzer().analyze(job)
         tolerance = fabrication_tolerance.lower()
         if tolerance not in _FABRICATION_INSTRUCTIONS:
             tolerance = "moderate"
+
+        feedback_section = ""
+        if feedback_hints:
+            feedback_section = "\n\nPreviously successful resume patterns for similar roles (use similar phrasing and emphasis):\n"
+            for i, hint in enumerate(feedback_hints[:5], 1):
+                feedback_section += f"{i}. {hint.get('job_title', 'Role')} @ {hint.get('job_company', 'Company')} — {hint.get('notes', '')}\n"
 
         prompt = f"""You are an expert resume writer and ATS optimizer.
 
@@ -110,6 +116,7 @@ Job Analysis:
 Original Employment Date Ranges (preserve exactly):
 {chr(10).join(f"- {dr}" for dr in self.date_ranges)}
 
+{feedback_section}
 Fabrication Tolerance Instructions:
 {_FABRICATION_INSTRUCTIONS[tolerance]}
 

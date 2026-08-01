@@ -18,9 +18,14 @@ from job_agent.models import JobApplication
 class TailoringAgent:
     """Generate tailored resumes and cover letters for job applications."""
 
+    DEFAULT_TIMEOUT_SECONDS: int = 300
+
     def __init__(self, settings: Settings):
         self.settings = settings
         self._bridge = Path(__file__).resolve().parent.parent.parent / "job_application_system" / "tailor_bridge.py"
+        self.timeout_seconds = int(
+            getattr(settings, "tailoring_timeout_seconds", self.DEFAULT_TIMEOUT_SECONDS)
+        )
 
     def tailor_for_job(self, job: JobApplication) -> Path | None:
         """Generate a tailored resume + cover letter and return the PDF path.
@@ -54,6 +59,12 @@ class TailoringAgent:
     def _run_bridge(self, job_path: Path, profile_path: Path) -> dict:
         """Run the Track A bridge script and parse its JSON output."""
         python = self._python_executable()
+        if not self._bridge.exists():
+            raise RuntimeError(
+                f"Tailoring bridge not found at {self._bridge}. "
+                "Ensure the job_application_system package is present."
+            )
+
         cmd = [
             str(python),
             str(self._bridge),
@@ -64,16 +75,26 @@ class TailoringAgent:
         ]
         logger.debug(f"Running tailoring bridge: {' '.join(cmd)}")
 
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=self._bridge.parent.parent,
-        )
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=self._bridge.parent.parent,
+                timeout=self.timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"tailor_bridge.py timed out after {self.timeout_seconds}s"
+            ) from exc
 
         if proc.returncode != 0:
-            raise RuntimeError(f"tailor_bridge.py exited {proc.returncode}: {proc.stderr or proc.stdout}")
+            # Log the full stderr for debugging but keep the raised message short.
+            logger.error(f"tailor_bridge.py stderr:\n{proc.stderr}")
+            raise RuntimeError(
+                f"tailor_bridge.py exited {proc.returncode}: {proc.stderr or proc.stdout}"
+            )
 
         # The bridge prints a JSON object as its last line.
         lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
@@ -107,6 +128,8 @@ class TailoringAgent:
                     "company": job.company,
                     "location": job.location or "",
                     "url": job.url,
+                    "description": job.description or "",
+                    "requirements": job.requirements or "",
                 },
                 f,
                 indent=2,

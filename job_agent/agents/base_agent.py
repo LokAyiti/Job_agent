@@ -14,7 +14,7 @@ from tenacity import (
 )
 
 from job_agent.config import Settings
-from job_agent.utils.humanizer import Humanizer, StealthInjector
+from job_agent.utils.humanizer import Humanizer
 
 
 class BaseAgent:
@@ -26,7 +26,6 @@ class BaseAgent:
             typing_delay_min=settings.typing_delay_min,
             typing_delay_max=settings.typing_delay_max,
         )
-        self.stealth = StealthInjector()
 
     def _screenshot_path(self, prefix: str) -> Path:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

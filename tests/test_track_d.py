@@ -256,6 +256,45 @@ def test_cli_intake_creates_profile(tmp_path):
     assert data["assets"]["base_resume_dir"] == str(tmp_path / "base resume")
 
 
+def test_cli_schedule_dry_run(tmp_path):
+    from click.testing import CliRunner
+    from job_agent.cli import cli
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "schedule",
+            "--dry-run",
+            "--sources",
+            "greenhouse",
+            "--time",
+            "10:00",
+            "--name",
+            "TestJobAgent",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Daily pipeline command" in result.output
+    assert "Dry-run" in result.output
+
+
+def test_cli_unschedule_with_mock_subprocess():
+    from click.testing import CliRunner
+    from job_agent.cli import cli
+    from unittest.mock import patch, MagicMock
+
+    runner = CliRunner()
+    fake_result = MagicMock()
+    fake_result.returncode = 0
+    fake_result.stderr = ""
+    with patch("subprocess.run", return_value=fake_result) as mock_run:
+        result = runner.invoke(cli, ["unschedule", "--name", "TestJobAgent"])
+        assert result.exit_code == 0, result.output
+        assert "removed" in result.output.lower()
+        mock_run.assert_called_once()
+
+
 def test_discovery_registry_unknown_source_raises():
     registry = DiscoveryRegistry()
     with pytest.raises(ValueError, match="Unknown discovery source"):
@@ -358,4 +397,104 @@ def test_indeed_discovery_disabled_by_default():
 
     jobs = asyncio.run(discovery.discover({"preferences": {}}))
     assert jobs == []
+
+
+def test_linkedin_discovery_parses_html_when_enabled():
+    from job_agent.discovery.linkedin import LinkedInDiscovery
+
+    html_response = """
+    <html>
+      <body>
+        <div class="base-card">
+          <a class="base-card__full-link" href="/jobs/view/1"></a>
+          <h3 class="base-search-card__title">Senior Data Analyst</h3>
+          <h4 class="base-search-card__subtitle">Acme Corp</h4>
+          <span class="job-search-card__location">Austin, TX</span>
+        </div>
+        <div class="base-card">
+          <a class="base-card__full-link" href="/jobs/view/2"></a>
+          <h3 class="base-search-card__title">Sales Representative</h3>
+          <h4 class="base-search-card__subtitle">Other Corp</h4>
+          <span class="job-search-card__location">Remote</span>
+        </div>
+      </body>
+    </html>
+    """
+
+    discovery = LinkedInDiscovery(max_results=10)
+    with patch("httpx.AsyncClient.get") as mock_get:
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = html_response
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        import asyncio
+
+        jobs = asyncio.run(
+            discovery.discover(
+                {
+                    "preferences": {
+                        "enable_linkedin_discovery": True,
+                        "target_roles": ["Data Analyst"],
+                        "target_locations": ["United States"],
+                    }
+                }
+            )
+        )
+
+    assert len(jobs) == 1
+    assert jobs[0].title == "Senior Data Analyst"
+    assert jobs[0].company == "Acme Corp"
+    assert jobs[0].platform == "linkedin"
+    assert "linkedin.com" in jobs[0].url
+
+
+def test_indeed_discovery_parses_rss_when_enabled():
+    from job_agent.discovery.indeed import IndeedDiscovery
+
+    rss_response = """<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0">
+      <channel>
+        <item>
+          <title>Senior Data Analyst</title>
+          <link>https://www.indeed.com/viewjob?jk=abc123</link>
+          <description>Acme Corp&lt;br&gt;Austin, TX</description>
+        </item>
+        <item>
+          <title>Sales Representative</title>
+          <link>https://www.indeed.com/viewjob?jk=def456</link>
+          <description>Other Corp&lt;br&gt;Remote</description>
+        </item>
+      </channel>
+    </rss>
+    """
+
+    discovery = IndeedDiscovery(max_results=10)
+    with patch("httpx.AsyncClient.get") as mock_get:
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = rss_response
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        import asyncio
+
+        jobs = asyncio.run(
+            discovery.discover(
+                {
+                    "preferences": {
+                        "enable_indeed_discovery": True,
+                        "target_roles": ["Data Analyst"],
+                        "target_locations": ["United States"],
+                    }
+                }
+            )
+        )
+
+    assert len(jobs) == 1
+    assert jobs[0].title == "Senior Data Analyst"
+    assert jobs[0].company == "Acme Corp"
+    assert jobs[0].platform == "indeed"
+    assert "indeed.com" in jobs[0].url
 

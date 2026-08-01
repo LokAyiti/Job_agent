@@ -10,6 +10,7 @@ from loguru import logger
 
 from job_agent.agents.base_agent import BaseAgent
 from job_agent.agents.email_agent import EmailAgent
+from job_agent.agents.feedback_ledger import FeedbackLedger
 from job_agent.agents.scoring_agent import ScoringAgent
 from job_agent.agents.submission_agent import ApplicationSubmissionAgent
 from job_agent.agents.tailoring_agent import TailoringAgent
@@ -33,6 +34,7 @@ class Orchestrator(BaseAgent):
         credential_store: CredentialStore | None = None,
         tailoring_agent: TailoringAgent | None = None,
         scoring_agent: ScoringAgent | None = None,
+        feedback_ledger: FeedbackLedger | None = None,
     ):
         super().__init__(settings)
         self.settings.ensure_dirs()
@@ -50,6 +52,7 @@ class Orchestrator(BaseAgent):
         self.email_agent = EmailAgent(self.settings)
         self.tailoring_agent = tailoring_agent or TailoringAgent(self.settings)
         self.scoring_agent = scoring_agent or ScoringAgent(self.settings)
+        self.feedback_ledger = feedback_ledger or FeedbackLedger()
 
     def load_jobs_from_json(self, path: Path) -> list[JobApplication]:
         with open(path, "r", encoding="utf-8") as f:
@@ -307,6 +310,8 @@ class Orchestrator(BaseAgent):
             return
 
         updates = self.email_agent.check_for_updates(submitted)
+        profile = self.settings.load_profile()
+        fab_tolerance = profile.get("preferences", {}).get("fabrication_tolerance", "moderate")
         for update in updates:
             job = self.excel.get_application_by_id(update.job_id)
             if job is None:
@@ -315,6 +320,13 @@ class Orchestrator(BaseAgent):
             job.notes = update.reason
             self._persist(job)
             logger.info(f"Updated job {job.id} to {job.status.value} from email")
+            self.feedback_ledger.record_from_status_update(
+                job=job,
+                new_status=update.new_status,
+                source_resume=str(job.resume_path) if job.resume_path else None,
+                fabrication_tolerance=fab_tolerance,
+                notes=update.reason,
+            )
 
         # Create draft replies for recruiter messages related to queued/submitted jobs.
         drafts = self.email_agent.create_drafts_for_jobs(submitted)

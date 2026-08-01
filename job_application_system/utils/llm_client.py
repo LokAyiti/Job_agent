@@ -99,18 +99,32 @@ class LLMClient:
 
     def _build_primary_client(self) -> tuple[Any, str]:
         """Return the best available LLM client and a provider label."""
-        # Prefer OpenRouter when available per user preference.
-        if Settings.OPENROUTER_API_KEY:
-            logger.info("Using OpenRouter primary")
+        # Prefer OpenRouter when available AND the model ID looks like an
+        # OpenRouter model (provider/model). A bare endpoint name such as
+        # "databricks-claude-sonnet-4-6" belongs to Databricks, not OpenRouter.
+        looks_like_openrouter_model = "/" in (self.model or "")
+
+        if Settings.OPENROUTER_API_KEY and looks_like_openrouter_model:
+            logger.info("Using OpenRouter primary (model=%s)", self.model)
             return self._build_openrouter_client(), "openrouter"
 
         if Settings.DATABRICKS_TOKEN and Settings.DATABRICKS_SONNET_ENDPOINT:
             try:
                 client = self._build_databricks_client()
-                logger.info("Using Databricks Sonnet fallback")
+                logger.info("Using Databricks Sonnet (model=%s)", self.model)
                 return client, "databricks"
             except Exception as exc:
                 logger.warning("Databricks client setup failed: %s", exc)
+
+        # OpenRouter key exists but model is not an OpenRouter ID; still try
+        # OpenRouter as a last resort so the user sees a clear model-ID error.
+        if Settings.OPENROUTER_API_KEY:
+            logger.warning(
+                "OPENROUTER_API_KEY is set but PRIMARY_MODEL=%s does not look like an OpenRouter model ID "
+                "(expected 'provider/model'). Trying OpenRouter anyway.",
+                self.model,
+            )
+            return self._build_openrouter_client(), "openrouter"
 
         raise RuntimeError(
             "No LLM provider configured. Set OPENROUTER_API_KEY or DATABRICKS_TOKEN + DATABRICKS_SONNET_ENDPOINT in .env"
@@ -161,7 +175,11 @@ class LLMClient:
         temperature: float = 0.3,
         max_tokens: int = 2000,
     ) -> str:
-        """Send a chat completion request and return the text content."""
+        """Send a chat completion request and return the text content.
+
+        Falls back to Databricks Sonnet if the primary OpenRouter request fails
+        and Databricks credentials are configured.
+        """
         try:
             response = self.headroom_client.chat.completions.create(
                 model=self.model,
@@ -175,7 +193,30 @@ class LLMClient:
             return content.strip()
         except Exception as exc:
             logger.error("LLM request failed (%s): %s", self.provider_name, exc)
+            if self.provider_name == "openrouter" and Settings.DATABRICKS_TOKEN:
+                logger.info("Falling back to Databricks Sonnet")
+                return self._chat_with_databricks(messages, temperature, max_tokens)
             raise
+
+    def _chat_with_databricks(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        """Direct Databricks call when OpenRouter/headroom primary fails."""
+        client = self._build_databricks_client()
+        # The Databricks endpoint expects an OpenAI-compatible payload.
+        response = client.create(
+            model="databricks-claude-sonnet-4-6",
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        content = response.choices[0].message.content
+        if not content:
+            raise RuntimeError("Databricks LLM returned empty content")
+        return content.strip()
 
 
 llm_client = LLMClient()

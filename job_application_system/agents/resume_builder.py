@@ -178,16 +178,53 @@ class ResumeBuilder:
             except Exception as exc:
                 logger.warning("docx2pdf failed: %s", exc)
 
-        # Fallback: try Microsoft Word COM automation
+        # Fallback 1: Microsoft Word COM automation (Windows only).
         try:
             self._convert_with_word_com(docx_path, pdf_path)
             return
         except Exception as exc:
             logger.warning("Word COM conversion failed: %s", exc)
 
+        # Fallback 2: LibreOffice headless conversion.
+        try:
+            self._convert_with_libreoffice(docx_path, pdf_path)
+            return
+        except Exception as exc:
+            logger.warning("LibreOffice conversion failed: %s", exc)
+
         raise RuntimeError(
-            "Could not convert DOCX to PDF. Ensure Microsoft Word is installed or LibreOffice is available."
+            "Could not convert DOCX to PDF. Ensure Microsoft Word or LibreOffice is available, "
+            "or install docx2pdf."
         )
+
+    def _convert_with_libreoffice(self, docx_path: Path, pdf_path: Path) -> None:
+        """Convert DOCX to PDF using LibreOffice in headless mode."""
+        import shutil
+        import subprocess
+
+        soffice = shutil.which("soffice") or shutil.which("libreoffice")
+        if not soffice:
+            raise RuntimeError("LibreOffice executable not found in PATH")
+
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            str(soffice),
+            "--headless",
+            "--convert-to",
+            "pdf",
+            "--outdir",
+            str(pdf_path.parent),
+            str(docx_path),
+        ]
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=120)
+
+        # LibreOffice names the output based on the input file name.
+        expected = pdf_path.parent / f"{docx_path.stem}.pdf"
+        if expected.exists() and expected.resolve() != pdf_path.resolve():
+            expected.replace(pdf_path)
+
+        if not pdf_path.exists():
+            raise RuntimeError("LibreOffice finished but PDF was not created")
 
     def _convert_with_word_com(self, docx_path: Path, pdf_path: Path) -> None:
         """Convert DOCX to PDF using Microsoft Word COM."""

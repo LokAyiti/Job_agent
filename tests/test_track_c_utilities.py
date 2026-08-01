@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from job_agent.utils.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError, with_async_circuit_breaker, with_circuit_breaker
+from job_agent.utils.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError, CircuitState, with_async_circuit_breaker, with_circuit_breaker
 from job_agent.utils.encryption import CredentialVault
 from job_agent.utils.humanizer import Humanizer, StealthInjector
 from job_agent.utils.proxy_rotator import ProxyRotator
@@ -76,6 +76,21 @@ class TestProxyRotator:
         rotator = ProxyRotator(["user:pass@proxy:8080"])
         d = rotator.to_playwright_dict()
         assert d == {"server": "proxy:8080", "username": "user", "password": "pass"}
+
+    def test_get_for_domain_is_deterministic(self):
+        rotator = ProxyRotator(["p1", "p2", "p3"])
+        a = rotator.get_for_domain("greenhouse.io")
+        b = rotator.get_for_domain("greenhouse.io")
+        c = rotator.get_for_domain("workday.com")
+        assert a.server == b.server
+        assert isinstance(c.server, str)
+        assert a.server in {"p1", "p2", "p3"}
+
+    def test_get_for_domain_distributes_across_proxies(self):
+        rotator = ProxyRotator(["p1", "p2"])
+        domains = ["a.com", "b.com", "c.com", "d.com"]
+        selected = {rotator.get_for_domain(d).server for d in domains}
+        assert selected <= {"p1", "p2"}
 
 
 class TestHumanizer:
@@ -184,6 +199,32 @@ class TestCircuitBreaker:
             await fn(-1)
         with pytest.raises(CircuitBreakerOpenError):
             await fn(5)
+
+    def test_domain_registry_creates_per_domain_breakers(self):
+        from job_agent.utils.circuit_breaker import DomainCircuitBreakerRegistry
+
+        registry = DomainCircuitBreakerRegistry(failure_threshold=2, recovery_timeout=1.0)
+        a = registry.get("greenhouse.io")
+        b = registry.get("greenhouse.io")
+        c = registry.get("workday.com")
+        assert a is b
+        assert a is not c
+        a.record_failure()
+        a.record_failure()
+        assert a.state == CircuitState.OPEN
+        assert c.state == CircuitState.CLOSED
+
+    def test_domain_registry_reset(self):
+        from job_agent.utils.circuit_breaker import DomainCircuitBreakerRegistry
+
+        registry = DomainCircuitBreakerRegistry(failure_threshold=1, recovery_timeout=1.0)
+        a = registry.get("greenhouse.io")
+        a.record_failure()
+        assert a.state == CircuitState.OPEN
+        registry.reset("greenhouse.io")
+        b = registry.get("greenhouse.io")
+        assert b is not a
+        assert b.state == CircuitState.CLOSED
 
 
 class TestStructuredLogging:

@@ -18,8 +18,10 @@ import logging
 import sys
 from pathlib import Path
 
-# Ensure job_application_system is on the path so relative top-level imports work.
+# Ensure project root and job_application_system are on the path so both
+# job_application_system relative imports and cross-package imports work.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "job_application_system"))
 
 from agents.ats_recruiter_scorer import ATSRecruiterScorer
@@ -29,6 +31,7 @@ from agents.jd_analyzer import JDAnalyzer
 from agents.resume_builder import ResumeBuilder
 from agents.resume_retriever import ResumeRetriever
 from agents.resume_tailor import ResumeTailor
+from job_agent.agents.feedback_ledger import FeedbackLedger
 from models.job_models import JobListing, TailoredResume
 
 logging.basicConfig(level=logging.INFO)
@@ -88,11 +91,15 @@ def _build_tailored_resume(job: JobListing, profile: dict) -> TailoredResume:
     revision = 1
     scorer_feedback = ""
 
+    feedback_ledger = FeedbackLedger()
+    feedback_hints = feedback_ledger.get_successful_claims(job.title)
+
     for attempt in range(1, MAX_REWRITE_ATTEMPTS + 1):
         logger.info(f"Resume rewrite attempt {attempt}/{MAX_REWRITE_ATTEMPTS} for {job.job_id}")
         tailored_content = tailor.tailor(
             job,
             fabrication_tolerance=fabrication_tolerance,
+            feedback_hints=feedback_hints,
         )
 
         score = scorer.score(tailored_content, job)

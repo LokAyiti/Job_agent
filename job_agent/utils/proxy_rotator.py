@@ -1,6 +1,7 @@
 """Proxy rotation for browser contexts and HTTP requests."""
 from __future__ import annotations
 
+import hashlib
 import os
 import random
 from dataclasses import dataclass
@@ -58,6 +59,19 @@ class ProxyRotator:
             return None
         proxy = random.choice(self._proxies)
         logger.debug(f"Randomly selected proxy: {proxy.server}")
+        return proxy
+
+    def get_for_domain(self, domain: str) -> Optional[Proxy]:
+        """Return a deterministic proxy for a given domain.
+
+        Using a hash-based selection keeps the same domain on the same proxy
+        across sessions, which helps avoid login/account churn on ATS platforms.
+        """
+        if not self._proxies:
+            return None
+        digest = int(hashlib.md5(domain.lower().encode()).hexdigest(), 16)
+        proxy = self._proxies[digest % len(self._proxies)]
+        logger.debug(f"Domain {domain} assigned proxy: {proxy.server}")
         return proxy
 
     def to_playwright_dict(self, proxy: Optional[Proxy] = None) -> Optional[dict]:

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from loguru import logger
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
+from playwright_stealth import Stealth
 
 from job_agent.agents.base_agent import BaseAgent
 from job_agent.captcha import CaptchaSolver, CaptchaUnsolvableError
@@ -12,8 +13,7 @@ from job_agent.models import Account, ApplicationStatus, JobApplication
 from job_agent.persistence.credentials import CredentialStore
 from job_agent.sites.base import FormChallenge, SiteAdapter
 from job_agent.sites.registry import build_default_registry
-from job_agent.utils.circuit_breaker import captcha_breaker
-from job_agent.utils.humanizer import StealthInjector
+from job_agent.utils.circuit_breaker import CircuitState, captcha_breaker, domain_breaker_registry
 from job_agent.utils.proxy_rotator import ProxyRotator
 
 
@@ -64,29 +64,44 @@ class ApplicationSubmissionAgent(BaseAgent):
         if self._playwright:
             await self._playwright.stop()
 
-    def _new_context(self) -> BrowserContext:
+    def _new_context(self, domain: str | None = None) -> BrowserContext:
         if self._browser is None:
             raise RuntimeError("Browser not started. Use async context manager.")
         context_kwargs = {
-            "user_agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            ),
+            "user_agent": self._user_agent(),
             "viewport": {"width": 1280, "height": 720},
             "locale": "en-US",
             "timezone_id": "America/New_York",
         }
-        proxy_dict = self.proxy_rotator.to_playwright_dict()
+        if self.proxy_rotator.has_proxies and domain:
+            proxy = self.proxy_rotator.get_for_domain(domain)
+        else:
+            proxy = self.proxy_rotator.next()
+        proxy_dict = self.proxy_rotator.to_playwright_dict(proxy)
         if proxy_dict:
             context_kwargs["proxy"] = proxy_dict
             logger.info(f"Using proxy: {proxy_dict['server']}")
         return self._browser.new_context(**context_kwargs)
 
-    async def _open_page(self) -> Page:
-        context = await self._new_context()
+    def _user_agent(self) -> str:
+        """Return a realistic rotating desktop browser user agent."""
+        try:
+            from fake_useragent import UserAgent
+
+            ua = UserAgent(browsers=["Chrome", "Edge", "Firefox"], platforms=["desktop"])
+            return ua.random
+        except Exception as exc:
+            logger.debug(f"Could not generate fake user agent: {exc}")
+            return (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+
+    async def _open_page(self, domain: str | None = None) -> Page:
+        context = await self._new_context(domain)
         page = await context.new_page()
         if self.settings.use_stealth:
-            await self.stealth.inject(page)
+            await Stealth().apply_stealth_async(page)
         return page
 
     async def _ensure_authenticated(
@@ -171,10 +186,12 @@ class ApplicationSubmissionAgent(BaseAgent):
         context = None
         page = None
         try:
-            context = await self._new_context()
+            from urllib.parse import urlparse
+            domain = urlparse(job.url).hostname or ""
+            context = await self._new_context(domain)
             page = await context.new_page()
             if self.settings.use_stealth:
-                await self.stealth.inject(page)
+                await Stealth().apply_stealth_async(page)
             await self.humanizer.wait(0.5)
 
             await page.goto(job.url, wait_until="domcontentloaded", timeout=30000)
@@ -265,14 +282,27 @@ class ApplicationSubmissionAgent(BaseAgent):
     async def apply_with_retry(self, job: JobApplication, resume_path: Path | None = None) -> SubmissionResult:
         import asyncio
         import random
+        from urllib.parse import urlparse
+
+        domain = urlparse(job.url).hostname or ""
+        breaker = domain_breaker_registry.get(domain)
+        if breaker.state == CircuitState.OPEN:
+            logger.warning(f"Circuit breaker open for {domain}; skipping {job.url}")
+            return SubmissionResult(
+                ApplicationStatus.FAILED,
+                f"Circuit breaker open for {domain}",
+            )
 
         last_result = None
         for attempt in range(1, self.settings.max_retries + 1):
             last_result = await self.apply(job, resume_path)
             if last_result.status in {ApplicationStatus.SUBMITTED, ApplicationStatus.QUEUED}:
+                breaker.record_success()
                 return last_result
             if last_result.status == ApplicationStatus.NEEDS_HUMAN:
                 return last_result
+            if last_result.status == ApplicationStatus.FAILED:
+                breaker.record_failure()
             if attempt < self.settings.max_retries:
                 jitter = random.uniform(0.5, 1.5) if self.settings.jitter_between_jobs else 1.0
                 delay = self.settings.retry_delay_seconds * jitter

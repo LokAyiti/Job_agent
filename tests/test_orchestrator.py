@@ -71,6 +71,40 @@ async def test_persist_round_trip(temp_settings, sample_job):
 
 
 @pytest.mark.asyncio
+async def test_pipeline_end_to_end_with_mocked_submission(temp_settings):
+    from unittest.mock import AsyncMock, patch
+
+    from job_agent.agents.submission_agent import ApplicationSubmissionAgent, SubmissionResult
+
+    orchestrator = Orchestrator(temp_settings)
+    job = JobApplication(
+        title="Applied AI Engineer",
+        company="Gradial",
+        url="https://boards.greenhouse.io/gradial/jobs/4338065009",
+        location="Remote",
+    )
+    resume_path = temp_settings.resume_dir / "JD_Applied AI Engineer_Test_20240101.pdf"
+    _make_resume_pdf(resume_path, "Applied AI Engineer")
+
+    with patch.object(
+        ApplicationSubmissionAgent,
+        "apply_with_retry",
+        new=AsyncMock(return_value=SubmissionResult(ApplicationStatus.QUEUED, "Dry-run succeeded")),
+    ):
+        results = await orchestrator.run([job])
+
+    assert len(results) == 1
+    assert results[0].status == ApplicationStatus.QUEUED
+
+    # Verify persistence.
+    queued = orchestrator.queue.list_by_status(ApplicationStatus.QUEUED)
+    assert any(q.id == job.id for q in queued)
+    logged = orchestrator.excel.get_application_by_id(job.id)
+    assert logged is not None
+    assert logged.status == ApplicationStatus.QUEUED
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_run_with_no_jobs(temp_settings):
     orchestrator = Orchestrator(temp_settings)
     results = await orchestrator.run()

@@ -80,6 +80,14 @@ class CircuitBreaker:
             self._on_failure()
             raise
 
+    def record_success(self) -> None:
+        """Public hook to record a successful call and reset the breaker."""
+        self._on_success()
+
+    def record_failure(self) -> None:
+        """Public hook to record a failed call (may open the breaker)."""
+        self._on_failure()
+
     def _on_success(self) -> None:
         self._failures = 0
         self._state = CircuitState.CLOSED
@@ -119,7 +127,35 @@ def with_async_circuit_breaker(breaker: CircuitBreaker):
     return decorator
 
 
+class DomainCircuitBreakerRegistry:
+    """Create and cache per-domain circuit breakers for platform-specific failures."""
+
+    def __init__(
+        self,
+        failure_threshold: int = 3,
+        recovery_timeout: float = 120.0,
+    ):
+        self._breakers: dict[str, CircuitBreaker] = {}
+        self._failure_threshold = failure_threshold
+        self._recovery_timeout = recovery_timeout
+
+    def get(self, domain: str) -> CircuitBreaker:
+        if domain not in self._breakers:
+            self._breakers[domain] = CircuitBreaker(
+                name=f"domain:{domain}",
+                failure_threshold=self._failure_threshold,
+                recovery_timeout=self._recovery_timeout,
+            )
+        return self._breakers[domain]
+
+    def reset(self, domain: str) -> None:
+        if domain in self._breakers:
+            del self._breakers[domain]
+
+
 # Shared circuit breakers for common external services.
 captcha_breaker = CircuitBreaker("2captcha", failure_threshold=3, recovery_timeout=300.0)
 gmail_breaker = CircuitBreaker("gmail", failure_threshold=3, recovery_timeout=120.0)
 outlook_breaker = CircuitBreaker("outlook", failure_threshold=3, recovery_timeout=120.0)
+# Global registry for per-domain circuit breakers (platforms / ATS domains).
+domain_breaker_registry = DomainCircuitBreakerRegistry()

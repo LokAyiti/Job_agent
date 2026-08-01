@@ -1,5 +1,6 @@
 """Command-line interface for the job-application orchestrator."""
 import json
+import sys
 from pathlib import Path
 
 import click
@@ -247,6 +248,105 @@ def intake(output: Path | None, env_file: Path | None):
 
     click.echo(f"\nProfile written to {output_path}")
     click.echo("Run `python -m job_agent.cli show-config` to verify.")
+
+@cli.command()
+@click.option("--sources", default="governmentjobs,greenhouse", help="Comma-separated discovery sources")
+@click.option("--time", "task_time", default="09:00", help="Daily run time (HH:MM, 24-hour)")
+@click.option("--name", "task_name", default="JobAgentDaily", help="Windows Task Scheduler task name")
+@click.option("--dry-run/--no-dry-run", default=False, help="Print command but do not create task")
+@click.option("--env-file", type=click.Path(path_type=Path), default=None)
+def schedule(sources: str, task_time: str, task_name: str, dry_run: bool, env_file: Path | None):
+    """Create a daily scheduled task (Windows Task Scheduler or cron line)."""
+    if env_file:
+        import os
+        os.environ.setdefault("ENV_FILE", str(env_file))
+        reload_settings()
+        _configure_logging_from_settings()
+
+    settings = get_settings()
+    project_root = settings.resume_dir.parent
+    python = Path(sys.executable)
+    # Prefer the venv interpreter if it exists.
+    venv_python = project_root / ".venv" / "Scripts" / "python.exe"
+    if venv_python.exists():
+        python = venv_python
+
+    source_list = ",".join(s.strip() for s in sources.split(",") if s.strip())
+    pipeline_cmd = f'"{python}" -m job_agent.cli pipeline --sources {source_list}'
+    if env_file:
+        pipeline_cmd += f' --env-file "{env_file}"'
+
+    # Windows Task Scheduler command.
+    task_cmd = f'cd /d "{project_root}" && {pipeline_cmd}'
+
+    click.echo(f"Daily pipeline command: {task_cmd}")
+    click.echo(f"Scheduled time: {task_time}")
+
+    if dry_run:
+        click.echo("Dry-run: task not created. Run again without --dry-run to create it.")
+        return
+
+    if sys.platform == "win32":
+        import subprocess
+
+        schtasks_cmd = [
+            "schtasks",
+            "/create",
+            "/f",
+            "/tn",
+            task_name,
+            "/tr",
+            task_cmd,
+            "/sc",
+            "daily",
+            "/st",
+            task_time,
+            "/rl",
+            "lowest",
+        ]
+        click.echo(f"Creating Windows Task Scheduler task '{task_name}'...")
+        result = subprocess.run(schtasks_cmd, capture_output=True, text=True, shell=False)
+        if result.returncode != 0:
+            click.echo(f"Failed to create task: {result.stderr}")
+            click.echo("You can create it manually with the command above.")
+        else:
+            click.echo(f"Task '{task_name}' created successfully.")
+            click.echo(f"View it with: schtasks /query /tn {task_name}")
+            click.echo(f"Remove with: python -m job_agent.cli unschedule --name {task_name}")
+    else:
+        cron_line = f"0 {task_time.split(':')[0]} * * * cd {project_root} && {pipeline_cmd}"
+        click.echo("Add this cron entry to your crontab (e.g., crontab -e):")
+        click.echo(cron_line)
+
+
+@cli.command()
+@click.option("--name", "task_name", default="JobAgentDaily", help="Windows Task Scheduler task name")
+@click.option("--env-file", type=click.Path(path_type=Path), default=None)
+def unschedule(task_name: str, env_file: Path | None):
+    """Remove the scheduled Windows Task Scheduler task."""
+    if env_file:
+        import os
+        os.environ.setdefault("ENV_FILE", str(env_file))
+        reload_settings()
+        _configure_logging_from_settings()
+
+    if sys.platform != "win32":
+        click.echo("unschedule is only implemented for Windows Task Scheduler.")
+        click.echo("Remove the cron line you added manually.")
+        return
+
+    import subprocess
+
+    result = subprocess.run(
+        ["schtasks", "/delete", "/f", "/tn", task_name],
+        capture_output=True,
+        text=True,
+        shell=False,
+    )
+    if result.returncode != 0:
+        click.echo(f"Failed to remove task: {result.stderr}")
+    else:
+        click.echo(f"Task '{task_name}' removed.")
 
 
 @cli.command("create-sample-jobs")
