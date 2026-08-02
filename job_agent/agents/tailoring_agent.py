@@ -11,6 +11,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from job_agent.agents.job_description_capture import JobDescriptionCapture
 from job_agent.config import Settings
 from job_agent.models import JobApplication
 
@@ -26,6 +27,7 @@ class TailoringAgent:
         self.timeout_seconds = int(
             getattr(settings, "tailoring_timeout_seconds", self.DEFAULT_TIMEOUT_SECONDS)
         )
+        self.jd_capture = JobDescriptionCapture(settings)
 
     def tailor_for_job(self, job: JobApplication) -> Path | None:
         """Generate a tailored resume + cover letter and return the PDF path.
@@ -46,6 +48,9 @@ class TailoringAgent:
             if not pdf_path.exists():
                 logger.error(f"Tailoring reported success but PDF not found: {pdf_path}")
                 return None
+
+            # Archive the job description next to the tailored resume.
+            self.jd_capture.capture(job, pdf_path)
 
             logger.info(f"Tailored resume generated: {pdf_path}")
             return pdf_path

@@ -15,6 +15,16 @@ from scrapling.parser import Selector
 from scrapling_service.proxy import as_dicts, as_strings, parse_proxy_list, proxies_from_env
 from scrapling_service.spiders import JobDiscoverySpider
 
+# Import project settings so the adapter generator can load API keys.
+try:
+    from job_agent.config import Settings
+    from job_agent.sites.adapter_generator import AdapterGenerator
+
+    _settings = Settings(_env_file=None)
+except Exception:
+    _settings = None
+    AdapterGenerator = None
+
 app = FastAPI(title="Job Agent Scrapling Service", version="1.0.0")
 
 
@@ -275,6 +285,44 @@ def extension_snapshot_endpoint(req: ExtensionSnapshot):
     }
     snapshot_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return {"snapshot_path": str(snapshot_path), "platform": platform}
+
+
+@app.post("/extension/generate-adapter")
+def extension_generate_adapter_endpoint(req: ExtensionSnapshot):
+    """Receive a DOM snapshot and immediately draft a SiteAdapter for review."""
+    if AdapterGenerator is None or _settings is None:
+        raise HTTPException(status_code=500, detail="Adapter generator is not available")
+
+    ADAPTER_DRAFTS_DIR.mkdir(parents=True, exist_ok=True)
+    platform = _sanitize_platform(req.platform_hint or _detect_platform(req.url) or "unknown")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    snapshot_filename = f"{platform}_{timestamp}.json"
+    snapshot_path = ADAPTER_DRAFTS_DIR / snapshot_filename
+
+    payload = {
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "url": req.url,
+        "platform": platform,
+        "html": req.html,
+        "fields": req.fields,
+        "metadata": req.metadata,
+    }
+    snapshot_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    generator = AdapterGenerator(_settings)
+    result = generator.generate_from_snapshot(payload)
+    code = result["code"]
+
+    draft_filename = f"{platform}_adapter_{timestamp}.py"
+    draft_path = ADAPTER_DRAFTS_DIR / draft_filename
+    draft_path.write_text(code, encoding="utf-8")
+
+    return {
+        "snapshot_path": str(snapshot_path),
+        "draft_path": str(draft_path),
+        "platform": platform,
+        "note": "Draft generated for manual review. Run `python -m job_agent.cli approve-adapter --platform <platform>` after a successful dry-run.",
+    }
 
 
 def _sanitize_platform(value: str) -> str:

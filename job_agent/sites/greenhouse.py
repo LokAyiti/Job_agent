@@ -3,15 +3,20 @@
 Best-effort form filling for boards.greenhouse.io and similar Greenhouse URLs.
 Unknown custom questions are skipped with a note so the user can review.
 """
-import re
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
-from playwright.async_api import Locator, Page, TimeoutError as PWTimeoutError
+from playwright.async_api import Page, TimeoutError as PWTimeoutError
 
 from job_agent.models import Account, JobApplication
 from job_agent.sites.base import FormChallenge, SiteAdapter
+from job_agent.sites.field_filler import RobustFieldFiller
+from job_agent.sites.form_utils import (
+    build_form_schema,
+    extract_fields,
+    get_profile_values,
+)
 
 
 class GreenhouseAdapter(SiteAdapter):
@@ -117,17 +122,17 @@ class GreenhouseAdapter(SiteAdapter):
                 raise FormChallenge(f"Unsupported Greenhouse flow detected: {indicator}")
 
     async def parse_form(self, page: Page) -> dict[str, Any]:
-        fields = {}
-        try:
-            fields["first_name"] = await page.locator('#first_name').count()
-            fields["last_name"] = await page.locator('#last_name').count()
-            fields["email"] = await page.locator('#email').count()
-            fields["phone"] = await page.locator('#phone').count()
-            fields["resume"] = await page.locator('input#resume[type="file"]').count()
-            fields["submit"] = await page.locator('button[type="submit"], input[type="submit"]').count()
-        except Exception as exc:
-            logger.warning(f"Greenhouse form parse error: {exc}")
-        return fields
+        """Inspect the live DOM and return a structured field schema."""
+        fields = await extract_fields(page)
+        known_selectors = {
+            "first_name": '#first_name',
+            "last_name": '#last_name',
+            "email": '#email',
+            "phone": '#phone',
+            "resume": 'input#resume[type="file"]',
+            "submit": 'input[type="submit"], button[type="submit"]',
+        }
+        return build_form_schema(fields, self.platform, page.url, known_selectors)
 
     async def fill_application(
         self,
@@ -137,28 +142,58 @@ class GreenhouseAdapter(SiteAdapter):
         profile: dict[str, str],
         dry_run: bool = False,
     ) -> None:
-        full_name = profile.get("my_name", "") or ""
-        name_parts = full_name.strip().split()
-        first_name = name_parts[0] if name_parts else ""
-        last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+        values = get_profile_values(profile)
+        filler = RobustFieldFiller(page)
 
-        await self._fill_text(page, '#first_name', first_name)
-        await self._fill_text(page, '#last_name', last_name)
-        await self._fill_text(page, '#email', profile.get("my_email", "") or "")
-        await self._fill_text(page, '#phone', profile.get("my_phone", "") or "")
-        await self._fill_by_label(page, "linkedin", profile.get("my_linkedin", "") or "")
+        await filler.fill(
+            values["first_name"],
+            field_id="first_name",
+            name="first_name",
+            label="First Name",
+            aria_label="First Name",
+        )
+        await filler.fill(
+            values["last_name"],
+            field_id="last_name",
+            name="last_name",
+            label="Last Name",
+            aria_label="Last Name",
+        )
+        await filler.fill(
+            values["email"],
+            field_id="email",
+            name="email",
+            label="Email",
+            aria_label="Email",
+        )
+        await filler.fill(
+            values["phone"],
+            field_id="phone",
+            name="phone",
+            label="Phone",
+            aria_label="Phone",
+        )
+        await filler.fill(
+            values["linkedin"],
+            field_id="question_",
+            label="LinkedIn",
+            aria_label="LinkedIn",
+            selectors=['input[id*="linkedin" i]'],
+        )
 
         # Resume upload.
         resume_file = Path(resume_path)
-        if resume_file.exists() and await page.locator('input#resume[type="file"]').count() > 0:
-            upload_input = page.locator('input#resume[type="file"]')
-            try:
-                # Greenhouse hides the file input; Playwright can still set it directly.
-                await upload_input.set_input_files(str(resume_file.resolve()))
-                logger.info(f"Uploaded resume {resume_file.name}")
-                await page.wait_for_timeout(1500)
-            except Exception as exc:
-                logger.warning(f"Resume upload failed: {exc}")
+        uploaded = await filler.upload(
+            resume_file,
+            field_id="resume",
+            name="resume",
+            label="Resume",
+            aria_label="Resume",
+            selectors=['input#resume[type="file"]'],
+        )
+        if uploaded:
+            logger.info(f"Uploaded resume {resume_file.name}")
+            await page.wait_for_timeout(1500)
         elif not resume_file.exists():
             logger.warning(f"Resume file not found: {resume_path}")
         else:
@@ -181,38 +216,6 @@ class GreenhouseAdapter(SiteAdapter):
         except PWTimeoutError:
             logger.warning("Submit click timed out; job may still be processing")
             return True
-
-    async def _fill_text(self, page: Page, selector: str, value: str) -> None:
-        if not value:
-            return
-        locator = page.locator(selector)
-        if await locator.count() == 0:
-            return
-        await locator.fill(value)
-
-    async def _fill_by_label(self, page: Page, keyword: str, value: str) -> None:
-        if not value:
-            return
-        try:
-            by_label = page.get_by_label(keyword, exact=False)
-            if await by_label.count() > 0:
-                await by_label.first.fill(value)
-                return
-        except Exception:
-            pass
-
-        # Fallback: find label containing keyword, then use its for attribute.
-        try:
-            label = page.locator(f'label:has-text("{keyword}")').first
-            if await label.count() == 0:
-                return
-            target_id = await label.get_attribute("for")
-            if target_id:
-                target = page.locator(f"#{target_id}")
-                if await target.count() > 0:
-                    await target.fill(value)
-        except Exception as exc:
-            logger.debug(f"Could not fill {keyword} field: {exc}")
 
 
 class GreenhouseEasyApplyAdapter(GreenhouseAdapter):

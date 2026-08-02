@@ -458,6 +458,75 @@ def pipeline(sources: str, dry_run: bool | None, env_file: Path | None):
     click.echo(f"Done — submitted: {submitted}, dry-run queued: {queued}, failed: {failed}, needs human: {human}, duplicate: {duplicate}")
 
 
+@cli.command("schedule-regression")
+@click.option("--time", "task_time", default="09:00", help="Weekly run time (HH:MM, 24-hour)")
+@click.option("--day", "task_day", default="SUN", help="Day of week (MON/TUE/.../SUN)")
+@click.option("--name", "task_name", default="JobAgentWeeklyRegression", help="Windows Task Scheduler task name")
+@click.option("--dry-run/--no-dry-run", default=False, help="Print command but do not create task")
+@click.option("--env-file", type=click.Path(path_type=Path), default=None)
+def schedule_regression(task_time: str, task_day: str, task_name: str, dry_run: bool, env_file: Path | None):
+    """Schedule the weekly adapter regression runner."""
+    if env_file:
+        import os
+        os.environ.setdefault("ENV_FILE", str(env_file))
+        reload_settings()
+        _configure_logging_from_settings()
+
+    settings = get_settings()
+    project_root = settings.resume_dir.parent
+    python = Path(sys.executable)
+    venv_python = project_root / ".venv" / "Scripts" / "python.exe"
+    if venv_python.exists():
+        python = venv_python
+
+    regression_cmd = f'"{python}" "{project_root / "scripts" / "weekly_regression.py"}"'
+    if env_file:
+        regression_cmd += f' --env-file "{env_file}"'
+
+    task_cmd = f'cd /d "{project_root}" && {regression_cmd}'
+
+    click.echo(f"Weekly regression command: {task_cmd}")
+    click.echo(f"Scheduled: every {task_day} at {task_time}")
+
+    if dry_run:
+        click.echo("Dry-run: task not created. Run again without --dry-run to create it.")
+        return
+
+    if sys.platform == "win32":
+        import subprocess
+
+        schtasks_cmd = [
+            "schtasks",
+            "/create",
+            "/f",
+            "/tn",
+            task_name,
+            "/tr",
+            task_cmd,
+            "/sc",
+            "weekly",
+            "/d",
+            task_day,
+            "/st",
+            task_time,
+            "/rl",
+            "lowest",
+        ]
+        click.echo(f"Creating Windows Task Scheduler task '{task_name}'...")
+        result = subprocess.run(schtasks_cmd, capture_output=True, text=True, shell=False)
+        if result.returncode != 0:
+            click.echo(f"Failed to create task: {result.stderr}")
+            click.echo("You can create it manually with the command above.")
+        else:
+            click.echo(f"Task '{task_name}' created successfully.")
+            click.echo(f"View it with: schtasks /query /tn {task_name}")
+            click.echo(f"Remove with: python -m job_agent.cli unschedule --name {task_name}")
+    else:
+        cron_line = f"0 {task_time.split(':')[0]} * * {task_day[:3].upper()} cd {project_root} && {regression_cmd}"
+        click.echo("Add this cron entry to your crontab (e.g. crontab -e):")
+        click.echo(cron_line)
+
+
 @cli.command("show-config")
 def show_config():
     """Print the current effective configuration."""
@@ -511,7 +580,7 @@ def generate_adapter(snapshot: Path, platform: str | None, output: Path | None, 
     result = _generate(data, settings)
     generated_code = result["code"]
 
-    draft_path = registry.add_draft(result["platform"], generated_code, snapshot=str(snapshot))
+    draft_path = registry.add_draft(result["platform"], generated_code, snapshot_path=str(snapshot))
     if output:
         output.write_text(generated_code, encoding="utf-8")
         click.echo(f"Draft code also written to {output}")

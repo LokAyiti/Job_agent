@@ -3,15 +3,19 @@
 <head>
   <meta charset="utf-8" />
   <style>
-    body { font-family: system-ui, sans-serif; width: 260px; padding: 12px; }
+    body { font-family: system-ui, sans-serif; width: 280px; padding: 12px; }
     button { width: 100%; padding: 10px; margin-top: 8px; cursor: pointer; }
-    #status { margin-top: 10px; font-size: 12px; word-break: break-word; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    #status { margin-top: 10px; font-size: 12px; word-break: break-word; white-space: pre-wrap; }
+    .success { color: #2e7d32; }
+    .error { color: #c62828; }
   </style>
 </head>
 <body>
   <h3>Job Agent Snapshot</h3>
-  <p>Click to capture the current page DOM and form fields for adapter generation.</p>
-  <button id="capture">Capture Page</button>
+  <p>Capture a job application form and optionally generate a SiteAdapter draft for review.</p>
+  <button id="capture">1. Capture Page</button>
+  <button id="generate" disabled>2. Generate Adapter Draft</button>
   <div id="status"></div>
   <script src="popup.js"></script>
 </body>

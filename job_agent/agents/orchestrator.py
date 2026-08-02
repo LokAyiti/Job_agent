@@ -16,6 +16,7 @@ from job_agent.agents.submission_agent import ApplicationSubmissionAgent
 from job_agent.agents.tailoring_agent import TailoringAgent
 from job_agent.config import Settings
 from job_agent.models import ApplicationStatus, JobApplication, Resume
+from job_agent.sites.promotion_tracker import PromotionTracker
 from job_agent.persistence.credentials import CredentialStore
 from job_agent.persistence.excel_logger import ExcelLogger
 from job_agent.persistence.google_sync import GoogleSync
@@ -104,8 +105,11 @@ class Orchestrator(BaseAgent):
             return job
 
         platform = job.platform or self._detect_platform(job.url)
-        if platform and platform not in self.settings.trusted_platform_list:
-            self._record_success_and_maybe_trust(platform)
+        if platform:
+            tracker = PromotionTracker(self.settings)
+            tracker.record_success(platform, job.id)
+            if tracker.is_promoted(platform) and platform not in self.settings.trusted_platform_list:
+                self._add_trusted_platform(platform)
         job.notes = f"Approved by human. Platform: {platform}"
         self._persist(job)
         logger.info(f"Job {job_id} approved")
@@ -152,7 +156,9 @@ class Orchestrator(BaseAgent):
             return False
         if not platform:
             return False
-        return platform in self.settings.trusted_platform_list
+        if platform in self.settings.trusted_platform_list:
+            return True
+        return PromotionTracker(self.settings).is_promoted(platform)
 
     def _find_best_resume(self, job: JobApplication) -> Resume | None:
         if not self.settings.resume_dir.exists():

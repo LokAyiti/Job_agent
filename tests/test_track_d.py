@@ -49,6 +49,7 @@ def test_tailoring_agent_calls_bridge(tmp_path):
     settings = Settings(
         profile_json=tmp_path / "profile.json",
         resume_dir=tmp_path / "resume",
+        job_descriptions_dir=tmp_path / "job_descriptions",
         _env_file=None,
     )
     (tmp_path / "profile.json").write_text('{"personal_info": {"name": "Test"}}')
@@ -60,7 +61,9 @@ def test_tailoring_agent_calls_bridge(tmp_path):
 
     job = JobApplication(title="Data Analyst", company="Test", url="https://example.com")
 
-    with patch.object(agent, "_run_bridge") as mock_bridge:
+    with patch.object(agent, "_run_bridge") as mock_bridge, patch.object(
+        agent.jd_capture, "_fetch_url", return_value=None
+    ):
         mock_bridge.return_value = {
             "ok": True,
             "resume_pdf_path": str(fake_pdf),
@@ -68,6 +71,10 @@ def test_tailoring_agent_calls_bridge(tmp_path):
         result = agent.tailor_for_job(job)
         assert result == fake_pdf
         mock_bridge.assert_called_once()
+        assert job.jd_path is not None
+        assert job.jd_path.exists()
+        assert job.jd_html_path is not None
+        assert job.jd_html_path.exists()
 
 
 def test_tailoring_agent_returns_none_on_failure(tmp_path):

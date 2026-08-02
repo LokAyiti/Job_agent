@@ -80,11 +80,17 @@ Review this draft before approving it for autonomous submissions.
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
 from playwright.async_api import Page
 
 from job_agent.captcha import CaptchaSolver
 from job_agent.models import Account, JobApplication
 from job_agent.sites.base import FormChallenge, SiteAdapter
+from job_agent.sites.form_utils import (
+    build_form_schema,
+    extract_fields,
+    get_profile_values,
+)
 
 
 class {class_name}(SiteAdapter):
@@ -111,16 +117,20 @@ class {class_name}(SiteAdapter):
         pass
 
     async def parse_form(self, page: Page) -> dict[str, Any]:
-        fields = {{
-            "first_name": await page.locator('{first_name_selector}').count() if '{first_name_selector}' else 0,
-            "last_name": await page.locator('{last_name_selector}').count() if '{last_name_selector}' else 0,
-            "email": await page.locator('{email_selector}').count() if '{email_selector}' else 0,
-            "phone": await page.locator('{phone_selector}').count() if '{phone_selector}' else 0,
-            "linkedin": await page.locator('{linkedin_selector}').count() if '{linkedin_selector}' else 0,
-            "resume": await page.locator('{resume_selector}').count() if '{resume_selector}' else 0,
-            "submit": await page.locator('{submit_selector}').count() if '{submit_selector}' else 0,
+        """Inspect the live DOM and return a structured field schema."""
+        fields = await extract_fields(page)
+        known_selectors = {{
+            "first_name": '{first_name_selector}',
+            "last_name": '{last_name_selector}',
+            "email": '{email_selector}',
+            "phone": '{phone_selector}',
+            "linkedin": '{linkedin_selector}',
+            "resume": '{resume_selector}',
+            "submit": '{submit_selector}',
         }}
-        return fields
+        # Only include selectors that were inferred from the snapshot.
+        known_selectors = {{k: v for k, v in known_selectors.items() if v}}
+        return build_form_schema(fields, self.platform, page.url, known_selectors)
 
     async def fill_application(
         self,
@@ -130,35 +140,34 @@ class {class_name}(SiteAdapter):
         profile: dict[str, str],
         dry_run: bool = False,
     ) -> None:
-        full_name = profile.get("my_name", "") or ""
-        name_parts = full_name.strip().split()
-        first_name = name_parts[0] if name_parts else ""
-        last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+        values = get_profile_values(profile)
 
-        await self._fill(page, '{first_name_selector}', first_name)
-        await self._fill(page, '{last_name_selector}', last_name)
-        await self._fill(page, '{email_selector}', profile.get("my_email", "") or "")
-        await self._fill(page, '{phone_selector}', profile.get("my_phone", "") or "")
-        await self._fill(page, '{linkedin_selector}', profile.get("my_linkedin", "") or "")
+        await self._fill(page, '{first_name_selector}', values["first_name"])
+        await self._fill(page, '{last_name_selector}', values["last_name"])
+        await self._fill(page, '{email_selector}', values["email"])
+        await self._fill(page, '{phone_selector}', values["phone"])
+        await self._fill(page, '{linkedin_selector}', values["linkedin"])
 
         resume_file = Path(resume_path)
         if resume_file.exists() and '{resume_selector}':
             try:
                 await page.locator('{resume_selector}').set_input_files(str(resume_file.resolve()))
+                logger.info(f"Uploaded resume {{resume_file.name}}")
             except Exception as exc:
-                logger.warning(f"Resume upload failed on {self.platform}: {{exc}}")
+                logger.warning(f"Resume upload failed on {{self.platform}}: {{exc}}")
 
     async def submit(self, page: Page, dry_run: bool) -> bool:
         if not '{submit_selector}':
             return False
         if dry_run:
+            logger.info("Dry-run mode: stopping before final submit")
             return True
         try:
             await page.locator('{submit_selector}').click()
             await page.wait_for_timeout(2000)
             return True
         except Exception as exc:
-            logger.warning(f"Submit failed on {self.platform}: {{exc}}")
+            logger.warning(f"Submit failed on {{self.platform}}: {{exc}}")
             return False
 
     async def _fill(self, page: Page, selector: str, value: str) -> None:
@@ -169,7 +178,7 @@ class {class_name}(SiteAdapter):
             if await locator.count() > 0:
                 await locator.fill(value)
         except Exception as exc:
-            logger.debug(f"Could not fill {{selector}} on {self.platform}: {{exc}}")
+            logger.debug(f"Could not fill {{selector}} on {{self.platform}}: {{exc}}")
 '''
 
     def __init__(self, settings: Optional[Settings] = None):

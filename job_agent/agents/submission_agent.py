@@ -14,6 +14,7 @@ from job_agent.persistence.credentials import CredentialStore
 from job_agent.sites.base import FormChallenge, SiteAdapter
 from job_agent.sites.registry import build_default_registry
 from job_agent.utils.circuit_breaker import CircuitState, captcha_breaker, domain_breaker_registry
+from job_agent.utils.domain_throttler import AsyncDomainThrottler
 from job_agent.utils.proxy_rotator import ProxyRotator
 
 
@@ -44,6 +45,7 @@ class ApplicationSubmissionAgent(BaseAgent):
         )
         self.solver = CaptchaSolver(self.settings)
         self.proxy_rotator = ProxyRotator(self.settings.proxy_list)
+        self.throttler = AsyncDomainThrottler(min_delay=2.0, max_delay=3.0)
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
 
@@ -188,6 +190,7 @@ class ApplicationSubmissionAgent(BaseAgent):
         try:
             from urllib.parse import urlparse
             domain = urlparse(job.url).hostname or ""
+            await self.throttler.wait(domain)
             context = await self._new_context(domain)
             page = await context.new_page()
             if self.settings.use_stealth:
@@ -198,8 +201,23 @@ class ApplicationSubmissionAgent(BaseAgent):
             await self.humanizer.wait(1.5)
             await self.humanizer.move_mouse_randomly(page)
 
-            await self._ensure_authenticated(page, adapter, job)
+            account = await self._ensure_authenticated(page, adapter, job)
             # Give the page a moment to settle after authentication redirects.
+            await self.humanizer.wait(1.0)
+
+            # Adapter-specific hook: navigate to the apply page and authenticate if
+            # the login gate only appears there (e.g., GovernmentJobs).
+            await adapter.prepare_application(page, job, account)
+            await self.humanizer.wait(1.0)
+
+            # Some platforms redirect to login only after navigating to the apply
+            # page, so re-check authentication after prepare_application.
+            account = await self._ensure_authenticated(page, adapter, job) or account
+            await self.humanizer.wait(1.0)
+
+            # Authentication may have redirected us away from the apply page;
+            # let the adapter navigate back before parsing/filling the form.
+            await adapter.prepare_application(page, job, account)
             await self.humanizer.wait(1.0)
 
             form_summary = await adapter.parse_form(page)

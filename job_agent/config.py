@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     log_file: Path = Field(default=_PROJECT_ROOT / "logs" / "applications.xlsx")
     sqlite_db: Path = Field(default=_PROJECT_ROOT / "logs" / "job_queue.db")
     screenshot_dir: Path = Field(default=_PROJECT_ROOT / "logs" / "screenshots")
+    html_snapshot_dir: Path = Field(default=_PROJECT_ROOT / "logs" / "html_snapshots")
+    job_descriptions_dir: Path = Field(default=_PROJECT_ROOT / "job_descriptions")
 
     # Profile (legacy .env fields; overridden by profile_json when present)
     my_name: str = Field(default="")
@@ -92,6 +94,10 @@ class Settings(BaseSettings):
     adapter_drafts_dir: Path = Field(default=_PROJECT_ROOT / "data" / "adapter_drafts")
     adapter_registry_file: Path = Field(default=_PROJECT_ROOT / "data" / "adapter_drafts.json")
 
+    # Adapter promotion criteria (N consecutive distinct dry-run successes)
+    adapter_promotion_file: Path = Field(default=_PROJECT_ROOT / "data" / "promotion_status.json")
+    adapter_promotion_threshold: int = Field(default=3)
+
     # Safety
     enable_auto_submit: bool = Field(default=False)
     human_in_the_loop: bool = Field(default=True)
@@ -123,7 +129,7 @@ class Settings(BaseSettings):
     circuit_breaker_failure_threshold: int = Field(default=3)
     circuit_breaker_recovery_timeout: float = Field(default=120.0)
 
-    @field_validator("resume_dir", "log_file", "sqlite_db", "screenshot_dir", "agent_log_file", "adapter_drafts_dir", "adapter_registry_file", mode="before")
+    @field_validator("resume_dir", "log_file", "sqlite_db", "screenshot_dir", "agent_log_file", "adapter_drafts_dir", "adapter_registry_file", "job_descriptions_dir", "html_snapshot_dir", "adapter_promotion_file", mode="before")
     @classmethod
     def _resolve_paths(cls, value):
         if value is None:
@@ -162,6 +168,8 @@ class Settings(BaseSettings):
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)
         self.base_resume_dir.mkdir(parents=True, exist_ok=True)
         self.adapter_drafts_dir.mkdir(parents=True, exist_ok=True)
+        self.job_descriptions_dir.mkdir(parents=True, exist_ok=True)
+        self.html_snapshot_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def captcha_enabled(self) -> bool:

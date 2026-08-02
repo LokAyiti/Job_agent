@@ -46,13 +46,28 @@ class BaseAgent:
             logger.warning(f"Could not save screenshot: {exc}")
             return None
 
-    def _profile_dict(self) -> dict[str, str]:
-        return {
+    def _profile_dict(self) -> dict[str, Any]:
+        """Return profile values for adapter filling.
+
+        Loads the unified ``profile.json`` when available and overlays legacy
+        ``.env`` values so adapters that have not been updated still work.
+        """
+        profile = self.settings.load_profile()
+        legacy = {
             "my_name": self.settings.my_name,
             "my_email": self.settings.my_email,
             "my_phone": self.settings.my_phone,
             "my_linkedin": self.settings.my_linkedin,
         }
+        merged = {**legacy, **profile}
+        # Ensure legacy flat keys stay available for older adapters.
+        personal = profile.get("personal_info", {})
+        if personal:
+            merged.setdefault("my_name", personal.get("name", ""))
+            merged.setdefault("my_email", personal.get("email", ""))
+            merged.setdefault("my_phone", personal.get("phone", ""))
+            merged.setdefault("my_linkedin", personal.get("linkedin", ""))
+        return merged
 
 
 class RetryConfig:

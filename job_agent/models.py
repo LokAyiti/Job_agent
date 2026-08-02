@@ -36,6 +36,9 @@ class JobApplication(BaseModel):
     fit_score: Optional[int] = None
     source: Optional[str] = None
     platform: Optional[str] = None
+    failure_reason: Optional[str] = Field(default=None)
+    jd_path: Optional[Path] = Field(default=None)
+    jd_html_path: Optional[Path] = Field(default=None)
 
     @field_validator("url")
     @classmethod
@@ -64,6 +67,9 @@ class JobApplication(BaseModel):
             "fit_score": self.fit_score if self.fit_score is not None else "",
             "source": self.source or "",
             "platform": self.platform or "",
+            "failure_reason": self.failure_reason or "",
+            "jd_path": str(self.jd_path) if self.jd_path else "",
+            "jd_html_path": str(self.jd_html_path) if self.jd_html_path else "",
         }
 
     @classmethod
@@ -80,9 +86,12 @@ class JobApplication(BaseModel):
             error_message=row.get("error_message") or None,
             notes=row.get("notes") or None,
             retry_count=int(row.get("retry_count", 0)) if row.get("retry_count") else 0,
-            fit_score=int(row["fit_score"]) if row.get("fit_score") else None,
+            fit_score=int(row.get("fit_score")) if row.get("fit_score") else None,
             source=row.get("source") or None,
             platform=row.get("platform") or None,
+            failure_reason=row.get("failure_reason") or None,
+            jd_path=Path(row["jd_path"]) if row.get("jd_path") else None,
+            jd_html_path=Path(row["jd_html_path"]) if row.get("jd_html_path") else None,
         )
 
 

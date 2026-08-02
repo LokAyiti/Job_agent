@@ -59,6 +59,19 @@ class SiteAdapter(ABC):
     async def parse_form(self, page: Page) -> dict[str, Any]:
         """Inspect the page and return a dict describing discovered form fields."""
 
+    async def prepare_application(
+        self,
+        page: Page,
+        job: JobApplication,
+        account: Account | None,
+    ) -> None:
+        """Optional hook to navigate to the application page and authenticate.
+
+        Called by the Submission Agent after the initial page load and before
+        parse_form/fill_application. Adapters that show the login gate only on
+        the apply page (e.g., GovernmentJobs) should override this.
+        """
+
     @abstractmethod
     async def fill_application(
         self,
