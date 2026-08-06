@@ -80,6 +80,7 @@ class SiteAdapter(ABC):
         resume_path: str,
         profile: dict[str, str],
         dry_run: bool = False,
+        form_schema: dict[str, Any] | None = None,
     ) -> None:
         """Fill the application form with profile info and upload the resume."""
 

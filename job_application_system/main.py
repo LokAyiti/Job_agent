@@ -6,6 +6,7 @@ import logging
 import sys
 from pathlib import Path
 
+from agents.jd_downloader import JDDownloader
 from config.settings import Settings
 from models.job_models import JobListing, TailoredResume
 from agents.scraper import GovernmentJobsScraper
@@ -47,6 +48,7 @@ class TrackAOrchestrator:
         self.cover_letter_builder = CoverLetterBuilder(
             Settings.OUTPUT_COVER_LETTER_DIR
         )
+        self.jd_downloader = JDDownloader(Settings.OUTPUT_JD_DIR)
         self.log = JobsLog(Settings.DATA_DIR / "jobs_log.xlsx")
 
     def run(self) -> list[TailoredResume]:
@@ -82,9 +84,12 @@ class TrackAOrchestrator:
                 logger.info("Resume content tailored for %s", job.job_id)
 
                 # Build resume files
-                docx_path, pdf_path = self.resume_builder.build(
+                docx_path, pdf_path, base_name = self.resume_builder.build(
                     tailored_content, job.title, job.company, job.job_id
                 )
+
+                # Save JD text/HTML for future reference, named to match the resume.
+                jd_text_path, jd_html_path = self.jd_downloader.save(job, base_name)
 
                 # Build cover letter
                 highlights = self._build_highlights(tailored_content)
@@ -99,6 +104,8 @@ class TrackAOrchestrator:
                     resume_docx_path=docx_path,
                     resume_pdf_path=pdf_path,
                     cover_letter_pdf_path=cover_letter_pdf,
+                    jd_text_path=jd_text_path,
+                    jd_html_path=jd_html_path,
                     status="generated",
                 )
                 results.append(tailored)

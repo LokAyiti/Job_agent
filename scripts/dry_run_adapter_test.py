@@ -58,6 +58,31 @@ def main() -> None:
     report_path = args.output_dir / f"dry_run_{args.platform}_{timestamp}.json"
     report_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
 
+    # Write a separate per-field audit file if the harness produced field audits.
+    field_audit_entries = [
+        {
+            "job_id": job.get("job_id"),
+            "title": job.get("title"),
+            "company": job.get("company"),
+            "url": job.get("url"),
+            "field_audit": job.get("field_audit"),
+            "field_audit_summary": job.get("field_audit_summary"),
+        }
+        for job in report.get("jobs", [])
+        if job.get("field_audit")
+    ]
+    if field_audit_entries:
+        audit_path = args.output_dir / f"e2e_field_audit_{args.platform}_{timestamp}.json"
+        audit_payload = {
+            "meta": {
+                "platform": args.platform,
+                "generated_at": timestamp,
+            },
+            "jobs": field_audit_entries,
+        }
+        audit_path.write_text(json.dumps(audit_payload, indent=2, default=str), encoding="utf-8")
+        logger.info(f"Per-field audit log: {audit_path}")
+
     total = len(report["jobs"])
     success = sum(1 for j in report["jobs"] if j.get("final_status") == "queued")
     needs_human = sum(1 for j in report["jobs"] if j.get("final_status") == "needs_human")

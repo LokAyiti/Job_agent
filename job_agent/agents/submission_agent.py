@@ -238,6 +238,7 @@ class ApplicationSubmissionAgent(BaseAgent):
                 str(resume.resolve()),
                 self._profile_dict(),
                 dry_run=not self.settings.enable_auto_submit,
+                form_schema=form_summary,
             )
 
             if self.settings.enable_auto_submit:

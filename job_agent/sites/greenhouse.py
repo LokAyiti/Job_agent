@@ -14,6 +14,7 @@ from job_agent.sites.base import FormChallenge, SiteAdapter
 from job_agent.sites.field_filler import RobustFieldFiller
 from job_agent.sites.form_utils import (
     build_form_schema,
+    canonical_value,
     extract_fields,
     get_profile_values,
 )
@@ -141,7 +142,8 @@ class GreenhouseAdapter(SiteAdapter):
         resume_path: str,
         profile: dict[str, str],
         dry_run: bool = False,
-    ) -> None:
+        form_schema: dict[str, Any] | None = None,
+    ) -> Any:
         values = get_profile_values(profile)
         filler = RobustFieldFiller(page)
 
@@ -198,6 +200,32 @@ class GreenhouseAdapter(SiteAdapter):
             logger.warning(f"Resume file not found: {resume_path}")
         else:
             logger.warning("No resume upload field found on this Greenhouse form")
+
+        # Fill any other mapped fields using the form schema and profile values.
+        if form_schema:
+            already_filled = {"first_name", "last_name", "email", "phone", "linkedin", "resume", "submit"}
+            for canonical, field in form_schema.get("fields", {}).items():
+                if canonical in already_filled or canonical == "submit":
+                    continue
+                value = canonical_value(values, canonical)
+                if not value:
+                    continue
+                await filler.fill(
+                    value,
+                    field_id=field.get("id"),
+                    name=field.get("name"),
+                    label=field.get("label"),
+                    aria_label=field.get("aria_label"),
+                    selectors=[field.get("selector")] if field.get("selector") else None,
+                )
+
+        # Auto-answer custom questions when the harness provides a form schema.
+        if form_schema:
+            from job_agent.agents.question_answering_agent import QuestionAnsweringAgent
+
+            return await QuestionAnsweringAgent().fill_unmapped_fields(
+                page, form_schema, job, profile, dry_run=dry_run
+            )
 
     async def submit(self, page: Page, dry_run: bool) -> bool:
         submit_button = page.locator('input[type="submit"], button[type="submit"]')

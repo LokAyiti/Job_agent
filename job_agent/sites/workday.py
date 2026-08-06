@@ -171,20 +171,52 @@ class WorkdayAdapter(SiteAdapter):
             'button:has-text("Apply")',
             'a:has-text("Apply")',
         ]
+
+        # Workday renders the apply button via JS; wait for it to appear.
         for selector in apply_selectors:
             try:
                 locator = page.locator(selector).first
+                await locator.wait_for(state="visible", timeout=10000)
                 if await locator.count() > 0 and await locator.is_visible():
                     await locator.click()
-                    await page.wait_for_timeout(2000)
+                    await page.wait_for_timeout(3000)
                     return True
             except Exception:
                 continue
         return False
 
+    async def _wait_for_form_or_login(self, page: Page) -> bool:
+        """Wait for either application form fields or a login gate to appear.
+
+        Returns True if form fields are present, False if a login gate appeared.
+        """
+        try:
+            await page.wait_for_selector(
+                'input[data-automation-id="firstName"], input[data-automation-id="email"], '
+                'input[type="email"], input[type="password"], '
+                'button[data-automation-id="utilityButtonSignIn"], button:has-text("Sign In")',
+                timeout=15000,
+            )
+        except PWTimeoutError:
+            logger.warning("Neither application form nor login gate appeared within timeout")
+            return False
+
+        # If a login gate is present, report it.
+        if await page.locator('input[type="password"]').count() > 0 or await page.locator(
+            'button[data-automation-id="utilityButtonSignIn"], button:has-text("Sign In")'
+        ).count() > 0:
+            logger.warning("Workday login gate detected after clicking Apply")
+            return False
+
+        return True
+
     async def parse_form(self, page: Page) -> dict[str, Any]:
         """Inspect the live DOM and return a structured field schema."""
         await self._click_apply_if_needed(page)
+        form_visible = await self._wait_for_form_or_login(page)
+        if not form_visible:
+            raise FormChallenge("Workday application form not reachable; likely requires login or unsupported extension flow")
+
         fields = await extract_fields(page)
         known_selectors = {
             "first_name": 'input[data-automation-id="firstName"], input[name*="firstName" i], input[aria-label*="First Name" i]',
@@ -204,13 +236,17 @@ class WorkdayAdapter(SiteAdapter):
         resume_path: str,
         profile: dict[str, str],
         dry_run: bool = False,
+        form_schema: dict[str, Any] | None = None,
     ) -> None:
         """Fill the Workday application form."""
         values = get_profile_values(profile)
         filler = RobustFieldFiller(page)
 
-        # Click Apply if we are still on the job details page.
+        # Click Apply if we are still on the job details page, then wait for the form.
         await self._click_apply_if_needed(page)
+        form_visible = await self._wait_for_form_or_login(page)
+        if not form_visible:
+            raise FormChallenge("Workday application form not reachable; likely requires login or unsupported extension flow")
 
         await filler.fill(
             values["first_name"],
@@ -265,6 +301,14 @@ class WorkdayAdapter(SiteAdapter):
                     'input[data-automation-id="resume"][type="file"]',
                     'input[type="file"][aria-label*="Resume" i]',
                 ],
+            )
+
+        # Auto-answer custom questions when the harness provides a form schema.
+        if form_schema:
+            from job_agent.agents.question_answering_agent import QuestionAnsweringAgent
+
+            return await QuestionAnsweringAgent().fill_unmapped_fields(
+                page, form_schema, job, profile, dry_run=dry_run
             )
 
     async def submit(self, page: Page, dry_run: bool) -> bool:

@@ -24,6 +24,8 @@ class JobsLog:
         "application_link",
         "resume_pdf_path",
         "cover_letter_pdf_path",
+        "jd_text_path",
+        "jd_html_path",
     ]
 
     def __init__(self, log_path: Path) -> None:
@@ -71,6 +73,8 @@ class JobsLog:
             "cover_letter_pdf_path": (
                 str(tailored.cover_letter_pdf_path) if tailored.cover_letter_pdf_path else ""
             ),
+            "jd_text_path": str(tailored.jd_text_path) if tailored.jd_text_path else "",
+            "jd_html_path": str(tailored.jd_html_path) if tailored.jd_html_path else "",
         }])
         df = pd.concat([df, new_row], ignore_index=True)
         self._save_df(df)
@@ -92,5 +96,6 @@ if __name__ == "__main__":
         job=sample_job,
         resume_docx_path=Path("resume.docx"),
         resume_pdf_path=Path("resume.pdf"),
+        jd_text_path=Path("jd.txt"),
     )
     log.add(sample_job, sample_tailored)

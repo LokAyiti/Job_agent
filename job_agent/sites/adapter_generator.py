@@ -118,6 +118,7 @@ class {class_name}(SiteAdapter):
 
     async def parse_form(self, page: Page) -> dict[str, Any]:
         """Inspect the live DOM and return a structured field schema."""
+        await self._click_apply_if_needed(page)
         fields = await extract_fields(page)
         known_selectors = {{
             "first_name": '{first_name_selector}',
@@ -139,14 +140,24 @@ class {class_name}(SiteAdapter):
         resume_path: str,
         profile: dict[str, str],
         dry_run: bool = False,
+        form_schema: dict[str, Any] | None = None,
     ) -> None:
         values = get_profile_values(profile)
+
+        await self._click_apply_if_needed(page)
 
         await self._fill(page, '{first_name_selector}', values["first_name"])
         await self._fill(page, '{last_name_selector}', values["last_name"])
         await self._fill(page, '{email_selector}', values["email"])
         await self._fill(page, '{phone_selector}', values["phone"])
         await self._fill(page, '{linkedin_selector}', values["linkedin"])
+
+        # Answer custom questions when the caller provides a form schema.
+        if form_schema:
+            from job_agent.agents.question_answering_agent import QuestionAnsweringAgent
+            await QuestionAnsweringAgent().fill_unmapped_fields(
+                page, form_schema, job, profile, dry_run=dry_run
+            )
 
         resume_file = Path(resume_path)
         if resume_file.exists() and '{resume_selector}':
@@ -156,14 +167,38 @@ class {class_name}(SiteAdapter):
             except Exception as exc:
                 logger.warning(f"Resume upload failed on {{self.platform}}: {{exc}}")
 
+    async def _click_apply_if_needed(self, page: Page) -> bool:
+        """Click an Apply/Apply Now button if the page is still a job details page."""
+        apply_selectors = [
+            'button:has-text("Apply")',
+            'a:has-text("Apply")',
+            'button:has-text("Apply Now")',
+            'a:has-text("Apply Now")',
+        ]
+        for selector in apply_selectors:
+            try:
+                locator = page.locator(selector).first
+                if await locator.count() > 0 and await locator.is_visible():
+                    await locator.click()
+                    await page.wait_for_timeout(3000)
+                    return True
+            except Exception:
+                continue
+        return False
+
     async def submit(self, page: Page, dry_run: bool) -> bool:
-        if not '{submit_selector}':
+        submit_selector = '{submit_selector}' or 'button[type="submit"], input[type="submit"], button:has-text("Submit"), button:has-text("Apply")'
+        if not submit_selector:
             return False
         if dry_run:
+            # Verify the submit control exists to prove we reached the final step.
+            if await page.locator(submit_selector).count() == 0:
+                logger.warning(f"Submit selector not found on {{self.platform}}: {{submit_selector}}")
+                return False
             logger.info("Dry-run mode: stopping before final submit")
             return True
         try:
-            await page.locator('{submit_selector}').click()
+            await page.locator(submit_selector).first.click()
             await page.wait_for_timeout(2000)
             return True
         except Exception as exc:
@@ -380,7 +415,7 @@ class SiteAdapter(ABC):
     @abstractmethod
     async def parse_form(self, page: Page) -> dict[str, Any]: ...
     @abstractmethod
-    async def fill_application(self, page, job, resume_path, profile, dry_run=False) -> None: ...
+    async def fill_application(self, page, job, resume_path, profile, dry_run=False, form_schema=None) -> None: ...
     @abstractmethod
     async def submit(self, page: Page, dry_run: bool) -> bool: ...
     async def detect_challenges(self, page: Page, dry_run: bool = False) -> None: ...

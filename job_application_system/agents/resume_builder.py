@@ -140,10 +140,10 @@ class ResumeBuilder:
 
     def build(
         self, tailored_content: dict, job_title: str, company: str, job_id: str = ""
-    ) -> tuple[Path, Path]:
+    ) -> tuple[Path, Path, str]:
         """Build a tailored DOCX and PDF resume.
 
-        Returns (docx_path, pdf_path).
+        Returns (docx_path, pdf_path, base_name).
         """
         doc = Document(str(self.template_path))
 
@@ -167,7 +167,7 @@ class ResumeBuilder:
         self._convert_to_pdf(docx_path, pdf_path)
         logger.info("Saved tailored PDF: %s", pdf_path)
 
-        return docx_path, pdf_path
+        return docx_path, pdf_path, base_name
 
     def _convert_to_pdf(self, docx_path: Path, pdf_path: Path) -> None:
         """Convert a DOCX file to PDF using the best available method."""

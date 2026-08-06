@@ -1,8 +1,14 @@
 """Shared pytest fixtures."""
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
+
+# Allow tests to import the Track A resume-generation package.
+_TRACK_A_ROOT = Path(__file__).resolve().parent.parent / "job_application_system"
+if str(_TRACK_A_ROOT) not in sys.path:
+    sys.path.insert(0, str(_TRACK_A_ROOT))
 
 from job_agent.config import Settings, get_settings, reload_settings
 from job_agent.models import JobApplication

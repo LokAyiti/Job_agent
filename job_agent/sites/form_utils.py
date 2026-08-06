@@ -102,14 +102,82 @@ def _is_required(field: dict[str, Any]) -> bool:
     return any(hint in combined for hint in REQUIRED_HINTS)
 
 
-def map_field_to_profile(combined_text: str) -> tuple[str, str]:
-    """Infer canonical field name and profile value source from text hints.
+def _normalize_text(text: Any) -> str:
+    """Return a lowercased, stripped version of the input text."""
+    return str(text or "").lower().strip()
 
-    Returns ``("", "")`` if no known mapping matches.
-    """
-    combined = combined_text.lower()
+
+def _field_text(field: dict[str, Any], *keys: str) -> str:
+    """Concatenate text values from the requested keys for matching."""
+    parts = [str(field.get(k, "") or "") for k in keys]
+    return " ".join(p for p in parts if p).lower()
+
+
+def _first_hint_match(text: str) -> tuple[str, str]:
+    """Return the first (canonical, source) pair that matches ``text``."""
+    if not text:
+        return "", ""
+    lowered = text.lower()
     for fragments, canonical, source in FIELD_HINTS:
-        if any(fragment in combined for fragment in fragments):
+        if any(fragment in lowered for fragment in fragments):
+            return canonical, source
+    return "", ""
+
+
+def map_field_to_profile(field: dict[str, Any]) -> tuple[str, str]:
+    """Infer canonical field name and profile value source from a field record.
+
+    Mapping is type-aware so name/id fragments do not override the actual control
+    type.  For example, an ``<input type="email" name="css_loginName">`` is
+    mapped to ``email`` even though the name contains ``loginName``.
+    """
+    tag = _normalize_text(field.get("tag"))
+    ftype = _normalize_text(field.get("type") or field.get("field_type", ""))
+
+    # Buttons / submit actions are always classified by their tag/type first.
+    if tag == "button" or ftype == "submit":
+        return "submit", "_action_"
+
+    # Email and telephone controls are authoritative about their data type.
+    if ftype == "email":
+        return "email", "personal_info.email"
+    if ftype == "tel":
+        return "phone", "personal_info.phone"
+
+    # File uploads are mapped to resume/cover-letter based on label/name.
+    if ftype == "file":
+        label_name_id = _field_text(field, "label", "name", "id")
+        if "cover" in label_name_id or "cover_letter" in label_name_id:
+            return "cover_letter", "assets.base_cover_letter"
+        return "resume", "assets.base_resume_pdf"
+
+    # Numeric inputs are treated as custom questions; never auto-map to a profile field.
+    if ftype == "number":
+        return "", ""
+
+    # Labels that are phrased as questions are custom application questions, not
+    # static profile fields, even if they contain a matching keyword. Strip
+    # required markers first so "What state are you in? *" is still recognised.
+    label = _field_text(field, "label")
+    cleaned_label = label.rstrip("*").strip()
+    if "?" in cleaned_label:
+        return "", ""
+
+    # For other text-like inputs, let the visible label/placeholder/aria-label/title win.
+    label_match = _first_hint_match(_field_text(field, "label", "placeholder", "aria_label", "aria-label", "title"))
+    if label_match[0]:
+        return label_match
+
+    # Fallback: name/id/placeholder/aria-label/title, but never let name/id fragments
+    # override the type-based mappings we already handled (full_name/name hints are
+    # intentionally skipped here because labels already handled them).
+    skip_canonicals = {"full_name", "first_name", "last_name", "submit", "email", "phone"}
+    combined = _field_text(field, "name", "id", "placeholder", "aria_label", "aria-label", "title")
+    lowered = combined
+    for fragments, canonical, source in FIELD_HINTS:
+        if canonical in skip_canonicals:
+            continue
+        if any(fragment in lowered for fragment in fragments):
             return canonical, source
     return "", ""
 
@@ -163,6 +231,38 @@ async def extract_fields(page: Page) -> list[dict[str, Any]]:
                         }
                     }
 
+                    // Skip the hidden required placeholder input that React-select
+                    // injects next to each dropdown; it will be populated by the
+                    // component when a visible option is chosen.
+                    if (
+                        tag === 'input' &&
+                        (el.getAttribute('aria-hidden') === 'true' || el.className.includes('requiredInput')) &&
+                        (el.closest('.select__container') || el.closest('.select'))
+                    ) {
+                        return;
+                    }
+
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    const isRendered = (
+                        style.display !== 'none' &&
+                        style.visibility !== 'hidden' &&
+                        parseFloat(style.opacity) > 0.05 &&
+                        rect.width > 0 &&
+                        rect.height > 0
+                    );
+
+                    // React-select renders a visible <input role="combobox">
+                    // inside a .select__container. Treat it as a select so the
+                    // filler knows to pick an option instead of typing free text.
+                    const isReactSelect = (
+                        tag === 'input' &&
+                        (el.getAttribute('role') === 'combobox' || el.closest('.select__container') || el.closest('.select'))
+                    );
+                    if (tag === 'select' || isReactSelect) {
+                        type = 'select';
+                    }
+
                     const entry = {
                         index,
                         tag,
@@ -176,7 +276,8 @@ async def extract_fields(page: Page) -> list[dict[str, Any]]:
                         aria_labelled_by: el.getAttribute('aria-labelledby') || '',
                         title: el.title || '',
                         required: el.required || false,
-                        visible: !!(el.offsetParent || tag === 'input' && el.type === 'hidden'),
+                        visible: isRendered || (tag === 'input' && el.type === 'hidden'),
+                        react_select: isReactSelect,
                     };
 
                     if (tag === 'select') {
@@ -240,8 +341,7 @@ def build_form_schema(
         title = field.get("title", "")
         ftype = field.get("type", "")
 
-        combined = f"{label} {name} {field_id} {placeholder} {aria_label} {title} {ftype}"
-        canonical, source = map_field_to_profile(combined)
+        canonical, source = map_field_to_profile(field)
 
         schema_entry = {
             "field_type": ftype or field.get("tag", "text"),
@@ -257,6 +357,9 @@ def build_form_schema(
         # Apply platform-specific known selector only to the primary mapped field.
         if canonical and canonical not in seen_canonical and canonical in known_selectors:
             schema_entry["selector"] = known_selectors[canonical]
+
+        if field.get("react_select"):
+            schema_entry["react_select"] = True
 
         if field.get("options"):
             schema_entry["options_sample"] = field["options"][:10]

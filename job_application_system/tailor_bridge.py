@@ -28,6 +28,7 @@ from agents.ats_recruiter_scorer import ATSRecruiterScorer
 from agents.consistency_ledger import ConsistencyLedger
 from agents.cover_letter_builder import CoverLetterBuilder
 from agents.jd_analyzer import JDAnalyzer
+from agents.jd_downloader import JDDownloader
 from agents.resume_builder import ResumeBuilder
 from agents.resume_retriever import ResumeRetriever
 from agents.resume_tailor import ResumeTailor
@@ -73,6 +74,9 @@ def _build_tailored_resume(job: JobListing, profile: dict) -> TailoredResume:
 
     output_cover_dir = _resolve_path(assets.get("base_cover_letter_dir"), "base cover letter")
     output_cover_dir.mkdir(parents=True, exist_ok=True)
+
+    output_jd_dir = _resolve_path(assets.get("output_jd_dir"), "base job description")
+    output_jd_dir.mkdir(parents=True, exist_ok=True)
 
     fabrication_tolerance = preferences.get("fabrication_tolerance", "moderate")
 
@@ -134,12 +138,16 @@ def _build_tailored_resume(job: JobListing, profile: dict) -> TailoredResume:
 
     # 4. Resume Builder exports DOCX/PDF.
     resume_builder = ResumeBuilder(selected_template, output_resume_dir)
-    docx_path, pdf_path = resume_builder.build(
+    docx_path, pdf_path, base_name = resume_builder.build(
         tailored_content,
         job.title,
         job.company,
         job_id=job.job_id,
     )
+
+    # 4b. Save JD text/HTML alongside the resume for future reference.
+    jd_downloader = JDDownloader(output_jd_dir)
+    jd_text_path, jd_html_path = jd_downloader.save(job, base_name)
 
     # 5. Cover Letter Builder.
     highlights = "\n".join(profile.get("experience_highlights", []))
@@ -158,6 +166,8 @@ def _build_tailored_resume(job: JobListing, profile: dict) -> TailoredResume:
             "resume_docx": docx_path,
             "resume_pdf": pdf_path,
             "cover_letter_pdf": cover_pdf_path,
+            "jd_text": jd_text_path,
+            "jd_html": jd_html_path,
         },
         revision=revision,
     )
@@ -167,6 +177,8 @@ def _build_tailored_resume(job: JobListing, profile: dict) -> TailoredResume:
         resume_docx_path=docx_path,
         resume_pdf_path=pdf_path,
         cover_letter_pdf_path=cover_pdf_path,
+        jd_text_path=jd_text_path,
+        jd_html_path=jd_html_path,
     )
 
 
@@ -189,6 +201,8 @@ def main() -> int:
         "resume_docx_path": str(result.resume_docx_path),
         "resume_pdf_path": str(result.resume_pdf_path),
         "cover_letter_pdf_path": str(result.cover_letter_pdf_path) if result.cover_letter_pdf_path else None,
+        "jd_text_path": str(result.jd_text_path) if result.jd_text_path else None,
+        "jd_html_path": str(result.jd_html_path) if result.jd_html_path else None,
         "job_id": result.job.job_id,
         "title": result.job.title,
         "company": result.job.company,

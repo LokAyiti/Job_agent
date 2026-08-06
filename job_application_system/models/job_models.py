@@ -29,5 +29,7 @@ class TailoredResume(BaseModel):
     resume_docx_path: Path
     resume_pdf_path: Path
     cover_letter_pdf_path: Path | None = None
+    jd_text_path: Path | None = None
+    jd_html_path: Path | None = None
     generated_at: datetime = Field(default_factory=datetime.utcnow)
     status: str = "generated"  # generated, queued, applied, failed

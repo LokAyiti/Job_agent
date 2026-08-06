@@ -98,6 +98,9 @@ class Settings(BaseSettings):
     adapter_promotion_file: Path = Field(default=_PROJECT_ROOT / "data" / "promotion_status.json")
     adapter_promotion_threshold: int = Field(default=3)
 
+    # Custom question answering cache
+    answer_cache_file: Path = Field(default=_PROJECT_ROOT / "data" / "answer_cache.json")
+
     # Safety
     enable_auto_submit: bool = Field(default=False)
     human_in_the_loop: bool = Field(default=True)
@@ -129,7 +132,7 @@ class Settings(BaseSettings):
     circuit_breaker_failure_threshold: int = Field(default=3)
     circuit_breaker_recovery_timeout: float = Field(default=120.0)
 
-    @field_validator("resume_dir", "log_file", "sqlite_db", "screenshot_dir", "agent_log_file", "adapter_drafts_dir", "adapter_registry_file", "job_descriptions_dir", "html_snapshot_dir", "adapter_promotion_file", mode="before")
+    @field_validator("resume_dir", "log_file", "sqlite_db", "screenshot_dir", "agent_log_file", "adapter_drafts_dir", "adapter_registry_file", "job_descriptions_dir", "html_snapshot_dir", "adapter_promotion_file", "answer_cache_file", mode="before")
     @classmethod
     def _resolve_paths(cls, value):
         if value is None:

@@ -37,6 +37,9 @@ class Settings:
     OUTPUT_COVER_LETTER_DIR = Path(
         os.getenv("OUTPUT_COVER_LETTER_DIR", str(COVER_LETTER_DIR))
     )
+    OUTPUT_JD_DIR = Path(
+        os.getenv("OUTPUT_JD_DIR", str(PROJECT_ROOT.parent / "base job description"))
+    )
 
     # Job search
     TARGET_URL = os.getenv("TARGET_URL", "https://www.governmentjobs.com/")
@@ -75,6 +78,7 @@ class Settings:
             cls.LOGS_DIR,
             cls.OUTPUT_RESUME_DIR,
             cls.OUTPUT_COVER_LETTER_DIR,
+            cls.OUTPUT_JD_DIR,
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
