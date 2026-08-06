@@ -98,3 +98,4 @@ docker-compose.override.yml
 # Docker / infrastructure (centralize outside project)
 qdrant_storage/
 
+job-agent-console/

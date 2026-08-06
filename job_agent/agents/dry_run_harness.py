@@ -251,9 +251,6 @@ class DryRunHarness:
                 await self.throttler.wait(domain)
                 context = await agent._new_context(domain)
                 page = await context.new_page()
-                if self.settings.use_stealth:
-                    from playwright_stealth import Stealth
-                    await Stealth().apply_stealth_async(page)
                 log_step("browser_context", "success")
             except Exception as exc:
                 log_step("browser_context", "failure", error=str(exc))

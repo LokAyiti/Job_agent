@@ -4,7 +4,6 @@ from pathlib import Path
 
 from loguru import logger
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
-from playwright_stealth import Stealth
 
 from job_agent.agents.base_agent import BaseAgent
 from job_agent.captcha import CaptchaSolver, CaptchaUnsolvableError
@@ -102,8 +101,6 @@ class ApplicationSubmissionAgent(BaseAgent):
     async def _open_page(self, domain: str | None = None) -> Page:
         context = await self._new_context(domain)
         page = await context.new_page()
-        if self.settings.use_stealth:
-            await Stealth().apply_stealth_async(page)
         return page
 
     async def _ensure_authenticated(
@@ -193,8 +190,6 @@ class ApplicationSubmissionAgent(BaseAgent):
             await self.throttler.wait(domain)
             context = await self._new_context(domain)
             page = await context.new_page()
-            if self.settings.use_stealth:
-                await Stealth().apply_stealth_async(page)
             await self.humanizer.wait(0.5)
 
             await page.goto(job.url, wait_until="domcontentloaded", timeout=30000)
